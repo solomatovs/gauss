@@ -1,0 +1,43 @@
+{
+  "name": "front",
+  "image": "mcr.microsoft.com/playwright:v1.49.0-jammy",
+  "workspaceFolder": "/app/front",
+
+  "mounts": [
+    "source=${localWorkspaceFolder}/front/web,target=${containerWorkspaceFolder}/web,type=bind",
+    "source=${localWorkspaceFolder}/front/pnpm-workspace.yaml,target=${containerWorkspaceFolder}/pnpm-workspace.yaml,type=bind",
+    "source=${localWorkspaceFolder}/.devcontainer/front/settings.json,target=${containerWorkspaceFolder}/.vscode/settings.json,type=bind",
+    "source=${localWorkspaceFolder}/.devcontainer/front/launch.json,target=${containerWorkspaceFolder}/.vscode/launch.json,type=bind",
+  ],
+
+  "postCreateCommand": "apt-get update && apt-get -y install libnss3 libatk-bridge2.0-0 libdrm-dev libxkbcommon-dev libgbm-dev libasound-dev libatspi2.0-0 libxshmfence-dev net-tools dnsutils lsof && npm install -g pnpm@latest",
+  "postStartCommand": "cd web && pnpm install --no-frozen-lockfile",
+
+  "waitFor": "postStartCommand",
+  "shutdownAction": "stopContainer",
+
+  "runArgs": ["--network", "gauss", "--name", "front"],
+  "forwardPorts": [8001],
+  "portsAttributes": {
+    "8001": { "label": "npm run dev", "onAutoForward": "openBrowser" }
+  },
+
+  "hostRequirements": {
+    "cpus": 1,
+    "memory": "2gb",
+    "storage": "2gb"
+  },
+
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "dbaeumer.vscode-eslint",
+        "esbenp.prettier-vscode",
+        "dracula-theme.theme-dracula",
+        "formulahendry.auto-rename-tag",
+        "naumovs.color-highlight",
+        "intellsmi.comment-translate"
+      ]
+    }
+  }
+}

@@ -7,18 +7,21 @@ yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
 
+# front
 node_modules
 dist
 dist-ssr
 *.local
 
+# back
+.venv/
+build/
+__pycache__/
+black/.venv/
+black/dist/
+*.egg-info/
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
-.idea
 .DS_Store
-*.suo
-*.ntvs*
-*.njsproj
-*.sln
-*.sw?

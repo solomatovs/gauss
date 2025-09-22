@@ -1,0 +1,33 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "front web debug",
+      // используем запуск node а не chrome
+      "type": "node",
+      "request": "launch",
+      "sourceMaps": true,
+      // какую программу запускаем
+      // pnpm run dev --host 0.0.0.0 --port 8001
+      "runtimeExecutable": "pnpm",
+      "args": ["run", "dev", "--host", "0.0.0.0", "--port", "8001"],
+      // workdirectory процесса vite
+      "cwd": "${workspaceFolder}/web",
+      "console": "integratedTerminal",
+      "serverReadyAction": {
+        // запускаем браузер после того как появиться "ready in" в логах
+        "pattern": "ready in",
+        // какую страницу открыть
+        "uriFormat": "http://localhost:8001",
+        "action": "debugWithChrome",
+        // // путь к исходникам react
+        "webRoot": "${workspaceFolder}/web/src",
+        // убиваем юраузер после завершения
+        "killOnServerStop": false
+      },
+      "env": {
+        "DEBUG": "vite:*"
+      }
+    }
+  ]
+}

@@ -1,0 +1,27 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "back server debug",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "uvicorn",
+      "console": "integratedTerminal",
+      "python": "/usr/local/bin/python3",
+      "cwd": "/home",
+      "args": [
+        "server.main:app",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "8000",
+        "--reload",
+        "--reload-dir", "${workspaceFolder}/server",
+        "--timeout-keep-alive",
+        "300",
+        "--timeout-graceful-shutdown",
+        "1"
+      ]
+    }
+  ]
+}
