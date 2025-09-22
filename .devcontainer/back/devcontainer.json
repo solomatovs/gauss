@@ -1,27 +1,35 @@
 {
   "name": "back",
   "image": "python:3.11",
-  "workspaceFolder": "/app/back",
+  "workspaceFolder": "/app",
 
   "mounts": [
-    "source=${localWorkspaceFolder}/back/pyproject.toml,target=${containerWorkspaceFolder}/pyproject.toml,type=bind",
-    "source=${localWorkspaceFolder}/back/server,target=${containerWorkspaceFolder}/server,type=bind",
-    "source=${localWorkspaceFolder}/.devcontainer/back/settings.json,target=${containerWorkspaceFolder}/.vscode/settings.json,type=bind",
-    "source=${localWorkspaceFolder}/.devcontainer/back/launch.json,target=${containerWorkspaceFolder}/.vscode/launch.json,type=bind"
+    "source=${localWorkspaceFolder}/.git,target=${containerWorkspaceFolder}/.git,type=bind",
+    "source=${localWorkspaceFolder}/.gitignore,target=${containerWorkspaceFolder}/.gitignore,type=bind",
+    "source=${localWorkspaceFolder}/front/package.json,target=${containerWorkspaceFolder}/front/package.json,type=bind",
+    "source=${localWorkspaceFolder}/front/pnpm-workspace.yaml,target=${containerWorkspaceFolder}/front/pnpm-workspace.yaml,type=bind",
+    "source=${localWorkspaceFolder}/front/pnpm-lock.yaml,target=${containerWorkspaceFolder}/front/pnpm-lock.yaml,type=bind",
+    "source=${localWorkspaceFolder}/front/web,target=${containerWorkspaceFolder}/front/web,type=bind",
+    "source=${localWorkspaceFolder}/back/pyproject.toml,target=${containerWorkspaceFolder}/back/pyproject.toml,type=bind",
+    "source=${localWorkspaceFolder}/back/server,target=${containerWorkspaceFolder}/back/server,type=bind",
+    "source=${localWorkspaceFolder}/.vscode,target=${containerWorkspaceFolder}/.vscode,type=bind",
+    "source=${localWorkspaceFolder}/.devcontainer,target=${containerWorkspaceFolder}/.devcontainer,type=bind"
   ],
 
   "containerEnv": {
-    "PYTHONPATH": "${containerWorkspaceFolder}"
+    "PYTHONPATH": "${containerWorkspaceFolder}/back"
   },
 
-  "postCreateCommand": "apt update && apt install -y net-tools dnsutils telnet && pip install .[dev] debugpy build",
+  "postCreateCommand": "apt update && apt install -y net-tools dnsutils telnet && pip3 install build debugpy",
+  "postStartCommand": "cd ${containerWorkspaceFolder}/back && pip3 install '.[dev]'",
+
   "waitFor": "postCreateCommand",
   "shutdownAction": "stopContainer",
 
   "runArgs": ["--network", "gauss", "--name", "back"],
   "forwardPorts": [8000],
   "portsAttributes": {
-    "8000": { "label": "back", "onAutoForward": "openBrowser" }
+    "8000": { "label": "back server dev", "onAutoForward": "openBrowser" }
   },
 
   "hostRequirements": {

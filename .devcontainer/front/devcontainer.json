@@ -1,17 +1,23 @@
 {
   "name": "front",
   "image": "mcr.microsoft.com/playwright:v1.49.0-jammy",
-  "workspaceFolder": "/app/front",
+  "workspaceFolder": "/app",
 
   "mounts": [
-    "source=${localWorkspaceFolder}/front/web,target=${containerWorkspaceFolder}/web,type=bind",
-    "source=${localWorkspaceFolder}/front/pnpm-workspace.yaml,target=${containerWorkspaceFolder}/pnpm-workspace.yaml,type=bind",
-    "source=${localWorkspaceFolder}/.devcontainer/front/settings.json,target=${containerWorkspaceFolder}/.vscode/settings.json,type=bind",
-    "source=${localWorkspaceFolder}/.devcontainer/front/launch.json,target=${containerWorkspaceFolder}/.vscode/launch.json,type=bind",
+    "source=${localWorkspaceFolder}/.git,target=${containerWorkspaceFolder}/.git,type=bind",
+    "source=${localWorkspaceFolder}/.gitignore,target=${containerWorkspaceFolder}/.gitignore,type=bind",
+    "source=${localWorkspaceFolder}/front/package.json,target=${containerWorkspaceFolder}/front/package.json,type=bind",
+    "source=${localWorkspaceFolder}/front/pnpm-workspace.yaml,target=${containerWorkspaceFolder}/front/pnpm-workspace.yaml,type=bind",
+    "source=${localWorkspaceFolder}/front/pnpm-lock.yaml,target=${containerWorkspaceFolder}/front/pnpm-lock.yaml,type=bind",
+    "source=${localWorkspaceFolder}/front/web,target=${containerWorkspaceFolder}/front/web,type=bind",
+    "source=${localWorkspaceFolder}/back/pyproject.toml,target=${containerWorkspaceFolder}/back/pyproject.toml,type=bind",
+    "source=${localWorkspaceFolder}/back/server,target=${containerWorkspaceFolder}/back/server,type=bind",
+    "source=${localWorkspaceFolder}/.vscode,target=${containerWorkspaceFolder}/.vscode,type=bind",
+    "source=${localWorkspaceFolder}/.devcontainer,target=${containerWorkspaceFolder}/.devcontainer,type=bind"
   ],
 
   "postCreateCommand": "apt-get update && apt-get -y install libnss3 libatk-bridge2.0-0 libdrm-dev libxkbcommon-dev libgbm-dev libasound-dev libatspi2.0-0 libxshmfence-dev net-tools dnsutils lsof && npm install -g pnpm@latest",
-  "postStartCommand": "cd web && pnpm install --no-frozen-lockfile",
+  "postStartCommand": "cd ${containerWorkspaceFolder}/front && pnpm install --no-frozen-lockfile",
 
   "waitFor": "postStartCommand",
   "shutdownAction": "stopContainer",
@@ -19,7 +25,7 @@
   "runArgs": ["--network", "gauss", "--name", "front"],
   "forwardPorts": [8001],
   "portsAttributes": {
-    "8001": { "label": "npm run dev", "onAutoForward": "openBrowser" }
+    "8001": { "label": "front web dev", "onAutoForward": "openBrowser" }
   },
 
   "hostRequirements": {

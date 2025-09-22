@@ -5,7 +5,7 @@ description = "gauss back fast api"
 authors = [
     { name = "Sergei Solomatov", email = "solomatovs@gmail.com" }
 ]
-readme = "README.md"
+readme = "server/README.md"
 requires-python = ">=3.9"
 dependencies = [
     "fastapi>=0.115.0",
