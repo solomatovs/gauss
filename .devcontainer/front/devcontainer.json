@@ -16,10 +16,9 @@
     "source=${localWorkspaceFolder}/.devcontainer,target=${containerWorkspaceFolder}/.devcontainer,type=bind"
   ],
 
-  "postCreateCommand": "apt-get update && apt-get -y install libnss3 libatk-bridge2.0-0 libdrm-dev libxkbcommon-dev libgbm-dev libasound-dev libatspi2.0-0 libxshmfence-dev net-tools dnsutils lsof && npm install -g pnpm@latest",
-  "postStartCommand": "cd ${containerWorkspaceFolder}/front && pnpm install --no-frozen-lockfile",
+  "postCreateCommand": "apt-get update && apt-get -y install libnss3 libatk-bridge2.0-0 libdrm-dev libxkbcommon-dev libgbm-dev libasound-dev libatspi2.0-0 libxshmfence-dev net-tools dnsutils lsof && npm install -g pnpm@latest && cd ${containerWorkspaceFolder}/front && pnpm install --no-frozen-lockfile",
 
-  "waitFor": "postStartCommand",
+  "waitFor": "postCreateCommand",
   "shutdownAction": "stopContainer",
 
   "runArgs": ["--network", "gauss", "--name", "front"],

@@ -20,8 +20,7 @@
     "PYTHONPATH": "${containerWorkspaceFolder}/back"
   },
 
-  "postCreateCommand": "apt update && apt install -y net-tools dnsutils telnet && pip3 install build debugpy",
-  "postStartCommand": "cd ${containerWorkspaceFolder}/back && pip3 install '.[dev]'",
+  "postCreateCommand": "apt update && apt install -y net-tools dnsutils telnet && pip3 install build debugpy && cd ${containerWorkspaceFolder}/back && pip3 install '.[dev]'",
 
   "waitFor": "postCreateCommand",
   "shutdownAction": "stopContainer",
@@ -50,7 +49,8 @@
         "esbenp.prettier-vscode",
         "ms-python.vscode-pylance",
         "ms-python.vscode-python-envs",
-        "ms-playwright.playwright"
+        "ms-playwright.playwright",
+        "intellsmi.comment-translate"
       ]
     }
   }
