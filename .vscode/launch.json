@@ -2,7 +2,7 @@
   "version": "0.2.0",
   "configurations": [
     {
-      "name": "front web debug",
+      "name": "web debug",
       // используем запуск node а не chrome
       "type": "node",
       "request": "launch",
@@ -30,26 +30,75 @@
       }
     },
     {
-      "name": "back server debug",
+      "name": "http worker debug",
       "type": "debugpy",
       "request": "launch",
-      "module": "uvicorn",
       "console": "integratedTerminal",
       "python": "/usr/local/bin/python3",
       "cwd": "/home",
+      "justMyCode": false,
+      "program": "${workspaceFolder}/back/server/http_worker/main.py",
       "args": [
-        "server.main:app",
-        "--host",
+        "--uvicorn.addr",
+        "0.0.0.0",
+        "--uvicorn.port",
+        "8000",
+        "--uvicorn.log_level",
+        "debug",
+        "--uvicorn.access_log",
+        "true",
+        "--fastapi.host",
+        "localhost",
+        "--fastapi.port",
+        "8000",
+        "--fastapi.websocket.host",
+        "localhost",
+        "--fastapi.websocket.port",
+        "9000",
+        "--fastapi.request_log",
+        "true",
+        "--fastapi.request_body_log",
+        "true",
+        "--fastapi.cors.allow_methods",
+        "*",
+        "--fastapi.cors.allowed_origins",
+        "http://localhost:8000,http://localhost:8001,http://localhost:9000"
+      ],
+    },
+    {
+      "name": "websocket worker debug",
+      "type": "debugpy",
+      "request": "launch",
+      "justMyCode": false,
+      "console": "integratedTerminal",
+      "python": "/usr/local/bin/python3",
+      "cwd": "/home",
+      "program": "${workspaceFolder}/back/server/websocket_worker/main.py",
+      "args": [
+        "--addr",
         "0.0.0.0",
         "--port",
-        "8000",
-        "--reload",
-        "--reload-dir", "${workspaceFolder}/back/server",
-        "--timeout-keep-alive",
-        "300",
-        "--timeout-graceful-shutdown",
-        "1"
-      ]
+        "9000",
+        "--ping_interval",
+        "5",
+        "--ping_timeout",
+        "3",
+        "--log_level",
+        "debug",
+      ],
+      "env": {
+        "PYTHONASYNCIODEBUG": "true"
+      }
+    },
+    {
+      "name": "python current file",
+      "type": "debugpy",
+      "request": "launch",
+      "console": "integratedTerminal",
+      "python": "/usr/local/bin/python3",
+      "cwd": "/home",
+      "justMyCode": false,
+      "program": "${file}",
     }
   ]
 }
