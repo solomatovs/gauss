@@ -2,7 +2,7 @@
   "version": "0.2.0",
   "configurations": [
     {
-      "name": "web debug",
+      "name": "react",
       // используем запуск node а не chrome
       "type": "node",
       "request": "launch",
@@ -30,7 +30,7 @@
       }
     },
     {
-      "name": "http worker debug",
+      "name": "http",
       "type": "debugpy",
       "request": "launch",
       "console": "integratedTerminal",
@@ -62,11 +62,11 @@
         "--fastapi.cors.allow_methods",
         "*",
         "--fastapi.cors.allowed_origins",
-        "http://localhost:8000,http://localhost:8001,http://localhost:9000"
+        "http://localhost:8000,http://localhost:8001,http://localhost:8002,http://localhost:9000"
       ],
     },
     {
-      "name": "websocket worker debug",
+      "name": "websocket",
       "type": "debugpy",
       "request": "launch",
       "justMyCode": false,
@@ -87,7 +87,7 @@
         "debug",
       ],
       "env": {
-        "PYTHONASYNCIODEBUG": "true"
+        // "PYTHONASYNCIODEBUG": "true"
       }
     },
     {

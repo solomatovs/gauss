@@ -1,6 +1,6 @@
 {
-  "name": "front",
-  "image": "mcr.microsoft.com/playwright:v1.49.0-jammy",
+  "name": "websocket",
+  "image": "python:3.11",
   "workspaceFolder": "/app",
 
   "mounts": [
@@ -16,15 +16,19 @@
     "source=${localWorkspaceFolder}/.devcontainer,target=${containerWorkspaceFolder}/.devcontainer,type=bind"
   ],
 
-  "postCreateCommand": "apt-get update && apt-get -y install libnss3 libatk-bridge2.0-0 libdrm-dev libxkbcommon-dev libgbm-dev libasound-dev libatspi2.0-0 libxshmfence-dev net-tools dnsutils lsof && npm install -g pnpm@latest && cd ${containerWorkspaceFolder}/front && pnpm install --no-frozen-lockfile",
+  "containerEnv": {
+    "PYTHONPATH": "${containerWorkspaceFolder}/back"
+  },
+
+  "postCreateCommand": "apt update && apt install -y net-tools dnsutils telnet && pip3 install build debugpy && cd ${containerWorkspaceFolder}/back && pip3 install '.[dev]'",
 
   "waitFor": "postCreateCommand",
   "shutdownAction": "stopContainer",
 
-  "runArgs": ["--network", "gauss", "--name", "front"],
-  "forwardPorts": [8001],
+  "runArgs": ["--network", "gauss", "--name", "websocket"],
+  "forwardPorts": [8000],
   "portsAttributes": {
-    "8001": { "label": "front web dev", "onAutoForward": "openBrowser" }
+    "8000": { "label": "websocket server dev", "onAutoForward": "openBrowser" }
   },
 
   "hostRequirements": {
@@ -36,11 +40,16 @@
   "customizations": {
     "vscode": {
       "extensions": [
-        "dbaeumer.vscode-eslint",
-        "esbenp.prettier-vscode",
+        "ms-python.python",
+        "ms-python.debugpy",
+        "charliermarsh.ruff",
         "dracula-theme.theme-dracula",
-        "formulahendry.auto-rename-tag",
-        "naumovs.color-highlight",
+        "ms-vscode.extension-test-runner",
+        "Continue.continue",
+        "esbenp.prettier-vscode",
+        "ms-python.vscode-pylance",
+        "ms-python.vscode-python-envs",
+        "ms-playwright.playwright",
         "intellsmi.comment-translate"
       ]
     }

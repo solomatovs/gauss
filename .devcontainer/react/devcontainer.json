@@ -1,6 +1,6 @@
 {
-  "name": "back",
-  "image": "python:3.11",
+  "name": "react",
+  "image": "mcr.microsoft.com/playwright:v1.49.0-jammy",
   "workspaceFolder": "/app",
 
   "mounts": [
@@ -16,19 +16,15 @@
     "source=${localWorkspaceFolder}/.devcontainer,target=${containerWorkspaceFolder}/.devcontainer,type=bind"
   ],
 
-  "containerEnv": {
-    "PYTHONPATH": "${containerWorkspaceFolder}/back"
-  },
-
-  "postCreateCommand": "apt update && apt install -y net-tools dnsutils telnet && pip3 install build debugpy && cd ${containerWorkspaceFolder}/back && pip3 install '.[dev]'",
+  "postCreateCommand": "apt-get update && apt-get -y install libnss3 libatk-bridge2.0-0 libdrm-dev libxkbcommon-dev libgbm-dev libasound-dev libatspi2.0-0 libxshmfence-dev net-tools dnsutils lsof && npm install -g pnpm@latest && cd ${containerWorkspaceFolder}/front && pnpm install --no-frozen-lockfile",
 
   "waitFor": "postCreateCommand",
   "shutdownAction": "stopContainer",
 
-  "runArgs": ["--network", "gauss", "--name", "back"],
-  "forwardPorts": [8000],
+  "runArgs": ["--network", "gauss", "--name", "react"],
+  "forwardPorts": [8001],
   "portsAttributes": {
-    "8000": { "label": "back server dev", "onAutoForward": "openBrowser" }
+    "8001": { "label": "react web dev", "onAutoForward": "openBrowser" }
   },
 
   "hostRequirements": {
@@ -40,16 +36,11 @@
   "customizations": {
     "vscode": {
       "extensions": [
-        "ms-python.python",
-        "ms-python.debugpy",
-        "charliermarsh.ruff",
-        "dracula-theme.theme-dracula",
-        "ms-vscode.extension-test-runner",
-        "Continue.continue",
+        "dbaeumer.vscode-eslint",
         "esbenp.prettier-vscode",
-        "ms-python.vscode-pylance",
-        "ms-python.vscode-python-envs",
-        "ms-playwright.playwright",
+        "dracula-theme.theme-dracula",
+        "formulahendry.auto-rename-tag",
+        "naumovs.color-highlight",
         "intellsmi.comment-translate"
       ]
     }
