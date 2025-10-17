@@ -15,22 +15,15 @@ async def simple_run() -> None:
         config_files=ConfigHelper.typical_config_files(),
     )
 
-    # настройка логирования
     LoggingHelper.basicConfig(config.log_level)
 
     logger = LoggingHelper.getLogger("main")
 
-    worker = WebSocketWorker.create(config)
-
     exit_code = 0
     
     try:
-        # Используем контекстный менеджер для автоматической очистки
         async with WebSocketWorker.create(config) as worker:
-            await worker.start()
-    except KeyboardInterrupt:
-        logger.info("received interrupt signal")
-        exit_code = 0
+            await worker.run()
     except Exception as _:
         logger.exception("critical error")
         exit_code = 1

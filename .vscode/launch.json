@@ -80,14 +80,14 @@
         "--port",
         "9000",
         "--ping_interval",
-        "5",
+        "500",
         "--ping_timeout",
-        "3",
+        "300",
         "--log_level",
-        "debug",
+        "info",
       ],
       "env": {
-        // "PYTHONASYNCIODEBUG": "true"
+        // "PYTHONASYNCIODEBUG": "false"
       }
     },
     {

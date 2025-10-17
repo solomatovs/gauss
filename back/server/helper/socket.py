@@ -1,7 +1,7 @@
 import socket
 import struct
 import array
-from typing import List, Tuple, Optional
+from typing import List, Tuple, Optional, Iterable
 from pydantic import BaseModel, Field, field_validator
 
 
@@ -362,7 +362,13 @@ class SocketHelper:
         return host
 
     @staticmethod
-    def socket_addr(socket):
+    def socket_addr(socket: socket.socket):
         addr, port = socket.getsockname()
         return f"{addr}:{port}"
-    
+
+    @staticmethod
+    def sockets_addr(socket: Iterable[socket.socket]):
+        res = map(lambda x: SocketHelper.socket_addr(x), socket)
+        res = ", ".join(res)
+
+        return res

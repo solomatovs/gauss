@@ -56,6 +56,7 @@ class LoggingHelper:
     def _get_formatter():
         return CustomFormatter(
             fmt="%(asctime)s.%(msecs)03d %(levelname)s: [%(threadName)s %(name)s] %(message)s",
+            # fmt="%(asctime)s.%(msecs)03d %(levelname)s: [%(threadName)s %(name)s %(pathname)s %(lineno)d] %(message)s",
             datefmt="%Y-%m-%d %H:%M:%S",
         )
 
