@@ -181,10 +181,6 @@ class Client:
         """Прием и обработка входящих сообщений"""
         async for message in self._websocket:
             await self._handle_message(message)
-    async def _throw_task(self):
-        """Прием и обработка входящих сообщений"""
-        await asyncio.sleep(5)
-        raise RuntimeError("runtime error")
 
     async def _send_message(self):
         """

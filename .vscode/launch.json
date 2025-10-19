@@ -84,7 +84,7 @@
         "--ping_timeout",
         "300",
         "--log_level",
-        "info",
+        "debug",
       ],
       "env": {
         // "PYTHONASYNCIODEBUG": "false"
