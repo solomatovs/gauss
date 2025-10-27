@@ -26,9 +26,9 @@
   "shutdownAction": "stopContainer",
 
   "runArgs": ["--network", "gauss", "--name", "websocket"],
-  "forwardPorts": [8000],
+  "forwardPorts": [9000],
   "portsAttributes": {
-    "8000": { "label": "websocket server dev", "onAutoForward": "openBrowser" }
+    "9000": { "label": "websocket server dev", "onAutoForward": "openBrowser" }
   },
 
   "hostRequirements": {

@@ -2,8 +2,8 @@ import time
 from datetime import datetime
 from typing import Optional, List, Any
 
-from pydantic import BaseModel, Field, field_validator
-from fastapi import FastAPI, HTTPException, Request, status
+from pydantic import BaseModel, Field
+from fastapi import FastAPI, Depends, HTTPException, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
@@ -13,7 +13,7 @@ from fastapi.exceptions import RequestValidationError
 from server.helper.os import OsHelper
 from server.helper.logging import LoggingHelper
 from server.http_worker.middleware.detailed_logging import DetailedLoggingMiddleware
-
+from server.core.worker_context import WorkerContext
 
 
 class ConnectionRequest(BaseModel):
@@ -91,55 +91,6 @@ class ShutdownResponse(BaseModel):
     detail: str = Field(default="Server is shutting down")
 
 
-class HttpContext(BaseModel):
-    """
-    Контекст HTTP-воркера.
-
-    Хранит основную информацию о состоянии воркера:
-    - уникальный идентификатор
-    - порт приложения
-    - время старта
-    - количество обработанных запросов
-    - статус завершения работы
-    """
-
-    worker_id: str = Field(
-        default_factory=lambda: OsHelper.generate_identifier(),
-        description="Уникальный идентификатор воркера"
-    )
-
-    start_time: datetime = Field(
-        default_factory=datetime.now,
-        description="Время запуска воркера."
-    )
-
-    requests_count: int = Field(
-        default=0,
-        ge=0,
-        description="Количество успешно обработанных запросов (не может быть отрицательным)."
-    )
-
-    # Валидация: worker_id должен быть корректным
-    @field_validator("worker_id")
-    @classmethod
-    def validate_worker_id(cls, v: str) -> str:
-        try:
-            # проверка что это валидный identifier
-            OsHelper.validate_identifier(v)
-        except ValueError:
-            raise ValueError("worker_id must be a valid identifier string")
-        return v
-
-    def uptime_seconds(self) -> int:
-        """Возвращает аптайм воркера в секундах."""
-        return int((datetime.now() - self.start_time).total_seconds())
-
-    def increment_requests(self, count: int = 1) -> None:
-        """Увеличить счетчик обработанных запросов."""
-        if count < 0:
-            raise ValueError("increment count must be >= 0")
-        self.requests_count += count
- 
 class TrustedHostConfig(BaseModel):
     allowed_hosts: List[Any] = Field(default=[
         "localhost",
@@ -166,6 +117,9 @@ class WebsocketConfig(BaseModel):
     host: str = Field(default="localhost", description="websocket host")
     port: int = Field(default=9000, description="websocket port")
 
+class FileRegistryConfig(BaseModel):
+    file_path: str = Field(default="registry.json", description="file registry path")
+
 class FastApiConfig(BaseModel):
     host: str = Field(default="localhost", description="api host")
     port: int = Field(default=8000, description="api port")
@@ -175,24 +129,31 @@ class FastApiConfig(BaseModel):
     websocket: WebsocketConfig = Field(default_factory=WebsocketConfig, description="websocket config")
     request_log: bool = Field(default=False, description="request logging")
     request_body_log: bool = Field(default=False, description="request body logging")
+    file_registry: FileRegistryConfig = Field(default_factory=FileRegistryConfig, description="file_registry")
 
-class FastApiContext(BaseModel):
-    """Конфиг fast api приложения"""
-    http_cx: HttpContext = Field(..., description="Http Context")
+# class FastApiContext(BaseModel):
+#     """Конфиг fast api приложения"""
+#     http_cx: HttpContext = Field(..., description="Http Context")
 
-
-def get_fast_api(config: FastApiConfig, cx: HttpContext) -> FastAPI:
+def get_fast_api(config: FastApiConfig, lifespan) -> FastAPI:
     """Создать FastAPI приложение"""
-    logger = LoggingHelper.getLogger(f"fastapi {cx.worker_id}")
-
+    logger = LoggingHelper.getLogger("fastapi")
+    
     app = FastAPI(
-        title=f"HTTP Worker {cx.worker_id}",
+        lifespan=lifespan,
+        title="HTTP Worker",
         description="Scalable HTTP Worker for WebSocket connections",
         version="1.0.0",
         docs_url="/docs",
         redoc_url="/redoc",
         openapi_url="/openapi.json",
     )
+
+    def get_context(request: Request):
+        """dependency-функция, которая извлекает текущую реализацию из состояния приложения"""
+        cx: WorkerContext = request.app.state.worker_context
+        return cx
+    
     # Добавляем middleware
     if config.request_log:
         app.add_middleware(
@@ -227,6 +188,8 @@ def get_fast_api(config: FastApiConfig, cx: HttpContext) -> FastAPI:
     # Request tracking middleware
     @app.middleware("http")
     async def track_requests(request: Request, call_next):
+        cx = get_context(request)
+
         cx.requests_count += 1
         start_time = time.time()
         
@@ -235,7 +198,7 @@ def get_fast_api(config: FastApiConfig, cx: HttpContext) -> FastAPI:
         process_time = time.time() - start_time
         logger.debug("request %s %s took %:.2fs", request.method, request.url, process_time)
         response.headers["X-Process-Time"] = str(process_time)
-        response.headers["X-Worker-ID"] = cx.worker_id
+        response.headers["X-Worker-ID"] = cx.id
         
         return response
     
@@ -243,10 +206,12 @@ def get_fast_api(config: FastApiConfig, cx: HttpContext) -> FastAPI:
     @app.exception_handler(RequestValidationError)
     async def validation_exception_handler(request: Request, exc: RequestValidationError):
         # Исправляем ошибку типизации: преобразуем Sequence в List
+        cx = get_context(request)
+
         error_response = ValidationErrorResponse(
             detail="Validation error",
             errors=list(exc.errors()),  # Преобразуем Sequence в List
-            worker_id=cx.worker_id
+            worker_id=cx.id
         )
         return JSONResponse(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -255,9 +220,11 @@ def get_fast_api(config: FastApiConfig, cx: HttpContext) -> FastAPI:
     
     @app.exception_handler(HTTPException)
     async def http_exception_handler(request: Request, exc: HTTPException):
+        cx = get_context(request)
+
         error_response = HttpErrorResponse(
             detail=exc.detail,
-            worker_id=cx.worker_id,
+            worker_id=cx.id,
             timestamp=datetime.now().isoformat()
         )
         return JSONResponse(
@@ -267,13 +234,13 @@ def get_fast_api(config: FastApiConfig, cx: HttpContext) -> FastAPI:
     
     # Routes
     @app.get("/", response_model=WorkerRootResponse)
-    async def worker_root():
+    async def worker_root(cx: WorkerContext = Depends(get_context)):
         """Корневой эндпоинт воркера"""
         uptime_seconds = (datetime.now() - cx.start_time).total_seconds()
         return WorkerRootResponse(
-            message=f"HTTP Worker {cx.worker_id}",
+            message=f"HTTP Worker {cx.id}",
             status="running",
-            worker_id=cx.worker_id,
+            worker_id=cx.id,
             pid=OsHelper.getpid(),
             port=config.port,
             uptime_seconds=uptime_seconds,
@@ -307,13 +274,13 @@ def get_fast_api(config: FastApiConfig, cx: HttpContext) -> FastAPI:
             )
     
     @app.get("/stats", response_model=WorkerStats)
-    async def get_stats():
+    async def get_stats(cx: WorkerContext = Depends(get_context)):
         """Получить статистику воркера"""
         uptime = (datetime.now() - cx.start_time).total_seconds()
         memory_usage = OsHelper.get_memory_usage_mb()
         
         return WorkerStats(
-            worker_id=cx.worker_id,
+            worker_id=cx.id,
             pid=OsHelper.getpid(),
             port=config.port,
             uptime_seconds=uptime,
@@ -323,34 +290,34 @@ def get_fast_api(config: FastApiConfig, cx: HttpContext) -> FastAPI:
         )
     
     @app.get("/health", response_model=HealthResponse)
-    async def health_check():
+    async def health_check(cx: WorkerContext = Depends(get_context)):
         """Проверка здоровья сервера"""
         uptime = (datetime.now() - cx.start_time).total_seconds()
 
         return HealthResponse(
             status="healthy",
             timestamp=time.time(),
-            worker_id=cx.worker_id,
+            worker_id=cx.id,
             uptime_seconds=uptime
         )
     
     @app.get("/metrics")
-    async def get_metrics():
+    async def get_metrics(cx: WorkerContext = Depends(get_context)):
         """Метрики для мониторинга (Prometheus format)"""
         uptime = (datetime.now() - cx.start_time).total_seconds()
         memory_usage = OsHelper.get_memory_usage_mb() or 0
         
         metrics = f"""# HELP http_worker_uptime_seconds Worker uptime in seconds
 # TYPE http_worker_uptime_seconds counter
-http_worker_uptime_seconds{{worker_id="{cx.worker_id}"}} {uptime}
+http_worker_uptime_seconds{{worker_id="{cx.id}"}} {uptime}
 
 # HELP http_worker_requests_total Total number of requests
 # TYPE http_worker_requests_total counter
-http_worker_requests_total{{worker_id="{cx.worker_id}"}} {cx.requests_count}
+http_worker_requests_total{{worker_id="{cx.id}"}} {cx.requests_count}
 
 # HELP http_worker_memory_usage_bytes Memory usage in bytes
 # TYPE http_worker_memory_usage_bytes gauge
-http_worker_memory_usage_bytes{{worker_id="{cx.worker_id}"}} {memory_usage * 1024 * 1024}
+http_worker_memory_usage_bytes{{worker_id="{cx.id}"}} {memory_usage * 1024 * 1024}
 """
         return JSONResponse(content=metrics, media_type="text/plain")
     

@@ -1,6 +1,6 @@
 import asyncio
 import socket
-from datetime import datetime
+from contextlib import asynccontextmanager
 from typing import Optional, List, Any
 import uvicorn
 from pydantic import BaseModel, Field
@@ -8,12 +8,10 @@ from pydantic_settings import BaseSettings
 
 from server.http_worker.fast_api import (
     get_fast_api,
-    HttpContext,
-    # TrustedHostConfig,
-    # CORSConfig,
-    # CompressionConfig,
     FastApiConfig,
+    FastAPI,
 )
+from server.core.domain.plugin import load_storage
 from server.helper.os import OsHelper
 from server.helper.socket import SocketHelper
 from server.helper.logging import LoggingHelper
@@ -131,11 +129,10 @@ class HttpWorker:
     
     def __init__(self, config: HttpConfig):
         self.config = config
-        self.cx = HttpContext()
         self._serve_task: Optional[asyncio.Task] = None
-        self._logger = LoggingHelper.getLogger(f"http {self.cx.worker_id}")
+        self._logger = LoggingHelper.getLogger("http")
 
-        self.server, self._socket = self._create_server_sync(self.config, self.cx, self._logger)
+        self.server, self._socket = self._create_server_sync(self.config, self._logger)
 
         # подписываемся на сигналы ос
         OsHelper.setup_shutdown_signal(self.shutdown)
@@ -165,12 +162,33 @@ class HttpWorker:
             self._logger.warning("no server to wait for")
 
     @staticmethod
-    def _create_server_sync(config: HttpConfig, cx: HttpContext, logger) -> tuple[uvicorn.Server, socket.socket]:
+    def _create_server_sync(config: HttpConfig, logger) -> tuple[uvicorn.Server, socket.socket]:
         """Синхронное создание WebSocket сервера"""
+    
+        @asynccontextmanager
+        async def lifespan(app: FastAPI):
+            # === Инициализация зависимостей ===
+
+            # Загружаем storage-плагин
+            # например, имя можно взять из конфига FastAPI или переменной окружения
+            import os
+            storage_name = os.getenv("STORAGE_PLUGIN", "memory")
+
+            storage = load_storage(storage_name)
+
+            # Сохраняем в app.state
+            app.state.storage = storage
+
+            yield
+
+            # === Завершение работы ===
+            await storage.close()
+
         # Пробуем создать сервер на каждом порту в диапазоне
         try:
+            
             # Создаем FastAPI приложение на указанном порту
-            app = get_fast_api(config.fastapi, cx)
+            app = get_fast_api(config.fastapi, lifespan)
             
             """Запустить созданный сервер"""
             uvconfig = config.to_uncorn_config(app)
@@ -206,26 +224,26 @@ class HttpWorker:
             except Exception as e:
                 self._logger.warning(f"error during socket close: {e}")
 
-    def get_connection_info(self) -> ConnectionResponse:
-        """Получить информацию о подключении"""
-        return ConnectionResponse(
-            worker_id=self.cx.worker_id,
-            port=self.config.uvicorn.port,
-            addr=self.config.uvicorn.addr,
-            websocket_url=f"http://{self.config.uvicorn.addr}:{self.config.uvicorn.port}",
-            created_at=self.cx.start_time.isoformat(),
-        )
+    # def get_connection_info(self) -> ConnectionResponse:
+    #     """Получить информацию о подключении"""
+    #     return ConnectionResponse(
+    #         worker_id=self.cx.worker_id,
+    #         port=self.config.uvicorn.port,
+    #         addr=self.config.uvicorn.addr,
+    #         websocket_url=f"http://{self.config.uvicorn.addr}:{self.config.uvicorn.port}",
+    #         created_at=self.cx.start_time.isoformat(),
+    #     )
 
-    def get_worker_info(self) -> WorkerRootResponse:
-        """Получить информацию о воркере"""
-        uptime = (datetime.now() - self.cx.start_time).total_seconds()
-        return WorkerRootResponse(
-            message=f"HTTP Worker {self.cx.worker_id}",
-            status="created",
-            worker_id=self.cx.worker_id,
-            pid=OsHelper.getpid(),
-            port=self.config.uvicorn.port,
-            uptime_seconds=uptime,
-            requests_count=self.cx.requests_count,
-            start_time=self.cx.start_time.isoformat()
-        )
+    # def get_worker_info(self) -> WorkerRootResponse:
+    #     """Получить информацию о воркере"""
+    #     uptime = (datetime.now() - self.cx.start_time).total_seconds()
+    #     return WorkerRootResponse(
+    #         message=f"HTTP Worker {self.cx.worker_id}",
+    #         status="created",
+    #         worker_id=self.cx.worker_id,
+    #         pid=OsHelper.getpid(),
+    #         port=self.config.uvicorn.port,
+    #         uptime_seconds=uptime,
+    #         requests_count=self.cx.requests_count,
+    #         start_time=self.cx.start_time.isoformat()
+    #     )

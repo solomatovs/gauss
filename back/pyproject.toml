@@ -7,11 +7,12 @@ authors = [
 ]
 readme = "server/README.md"
 requires-python = ">=3.9"
+
 dependencies = [
     "fastapi>=0.115.0",
     "uvicorn[standard]>=0.30.0",
-    "pydentic",
-    "pydantic-settings",
+    "pydantic>=2.7.0",
+    "pydantic-settings>=2.0.3",
     "pyyaml",
     "tomli",
     "aiorwlock",
@@ -32,3 +33,7 @@ dev = [
     "ruff>=0.5",
     "pytest>=8.0",
 ]
+
+[project.entry-points."gauss.storages"]
+redis = "server.adapters.redis_storage:RedisStorage"
+memory = "server.core.storage:MemoryStorage"

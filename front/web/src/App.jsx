@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import reactLogo from "./assets/react.svg";
 import viteLogo from "/vite.svg";
+import config from "./config";
 import "./App.css";
 
 function App() {
@@ -24,15 +25,18 @@ function App() {
     setConnectionError(null);
 
     try {
-      const response = await fetch("http://localhost:8000/create-connection", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          client_info: "React WebSocket Client",
-        }),
-      });
+      const response = await fetch(
+        `${config.apiBaseUrl}${config.apiPrefix}/create-connection`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            client_info: "React WebSocket Client",
+          }),
+        }
+      );
 
       if (!response.ok) {
         throw new Error(`HTTP ${response.status}: ${response.statusText}`);

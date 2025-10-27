@@ -37,6 +37,7 @@
       "python": "/usr/local/bin/python3",
       "cwd": "/home",
       "justMyCode": false,
+      "autoStartBrowser": false,
       "program": "${workspaceFolder}/back/server/http_worker/main.py",
       "args": [
         "--uvicorn.addr",
@@ -63,7 +64,7 @@
         "*",
         "--fastapi.cors.allowed_origins",
         "http://localhost:8000,http://localhost:8001,http://localhost:8002,http://localhost:9000"
-      ],
+      ]
     },
     {
       "name": "websocket",
@@ -84,7 +85,7 @@
         "--ping_timeout",
         "300",
         "--log_level",
-        "debug",
+        "debug"
       ],
       "env": {
         // "PYTHONASYNCIODEBUG": "false"
@@ -98,7 +99,58 @@
       "python": "/usr/local/bin/python3",
       "cwd": "/home",
       "justMyCode": false,
-      "program": "${file}",
+      "program": "${file}"
+    },
+    {
+      "name": "🧪 Debug Pytest (all tests)",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "pytest",
+      "justMyCode": false,
+      "console": "integratedTerminal",
+      "args": [
+        "-s", // вывод в консоль
+        "-v", // подробный вывод
+        "tests" // папка с тестами
+      ],
+      "env": {
+        "PYTHONPATH": "${workspaceFolder}/back"
+      },
+      "cwd": "${workspaceFolder}"
+    },
+    {
+      "name": "🧩 Debug Single Test File",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "pytest",
+      "justMyCode": false,
+      "console": "integratedTerminal",
+      "args": [
+        "-s",
+        "-v",
+        "${file}" // запускает тесты в текущем открытом файле
+      ],
+      "env": {
+        "PYTHONPATH": "${workspaceFolder}/back"
+      },
+      "cwd": "${workspaceFolder}"
+    },
+    {
+      "name": "🐞 Debug Specific Test Function",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "pytest",
+      "justMyCode": false,
+      "console": "integratedTerminal",
+      "args": [
+        "-s",
+        "-v",
+        "${file}::${selectedText}" // выделяешь имя теста и жмёшь F5
+      ],
+      "env": {
+        "PYTHONPATH": "${workspaceFolder}/back"
+      },
+      "cwd": "${workspaceFolder}"
     }
   ]
 }

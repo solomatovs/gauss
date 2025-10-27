@@ -6,7 +6,7 @@ from enum import Enum
 
 from pydantic import BaseModel, Field
 from websockets.asyncio.server import ServerConnection
-from websockets.exceptions import ConnectionClosed
+from websockets.exceptions import ConnectionClosed, ConnectionClosedError, ConnectionClosedOK
 
 from server.helper.os import OsHelper
 from server.helper.socket import SocketHelper
@@ -166,10 +166,23 @@ class Client:
 
         except* asyncio.CancelledError:
             self._logger.debug("receive task cancelled")
-            pass
-        except* ConnectionClosed as eg:
+        except* ConnectionClosedOK as eg:
+            # когда соединение закрыто нормальным способом (code=1000)
             for exc in eg.exceptions:
-                self._logger.exception(f"connection closed: {exc}")
+                self._logger.info(f"WebSocket connection closed ok: {exc}")
+        except* ConnectionClosedError as eg:
+            # когда соединение закрывается не по протоколу WebSocket
+            # то есть без корректного “close frame” (специального пакета, уведомляющего о завершении соединения).
+            for exc in eg.exceptions:
+                self._logger.warning(f"WebSocket connection closed unexpectedly: {exc}")
+        except* ConnectionClosed as eg:
+            # Базовый exception закрытия соединения. если перехвачен err, ok варианты, то сюда не попадет
+            #  └── websockets.exceptions.WebSocketException
+            #       └── websockets.exceptions.ConnectionClosed
+            #            ├── ConnectionClosedOK
+            #            └── ConnectionClosedError
+            for exc in eg.exceptions:
+                self._logger.warning(f"WebSocket connection closed unexpectedly: {exc}")
         except* Exception as eg:
             for exc in eg.exceptions:
                 self._logger.exception("error in task", exc_info=exc)
