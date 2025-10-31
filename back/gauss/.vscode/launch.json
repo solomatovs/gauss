@@ -1,0 +1,156 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "react",
+      // используем запуск node а не chrome
+      "type": "node",
+      "request": "launch",
+      "sourceMaps": true,
+      // какую программу запускаем
+      // pnpm run dev --host 0.0.0.0 --port 8001
+      "runtimeExecutable": "pnpm",
+      "args": ["run", "dev", "--host", "0.0.0.0", "--port", "8001"],
+      // workdirectory процесса vite
+      "cwd": "${workspaceFolder}/front/web",
+      "console": "integratedTerminal",
+      "serverReadyAction": {
+        // запускаем браузер после того как появиться "ready in" в логах
+        "pattern": "ready in",
+        // какую страницу открыть
+        "uriFormat": "http://localhost:8001",
+        "action": "debugWithChrome",
+        // // путь к исходникам react
+        "webRoot": "${workspaceFolder}/front/web/src",
+        // убиваем юраузер после завершения
+        "killOnServerStop": false
+      },
+      "env": {
+        // "DEBUG": "vite:*"
+      }
+    },
+    {
+      "name": "http",
+      "type": "debugpy",
+      "request": "launch",
+      "console": "integratedTerminal",
+      "python": "/usr/local/bin/python3",
+      "cwd": "/home",
+      "justMyCode": false,
+      "autoStartBrowser": false,
+      "program": "${workspaceFolder}/back/server/http_worker/main.py",
+      "args": [
+        "--uvicorn.addr",
+        "0.0.0.0",
+        "--uvicorn.port",
+        "8000",
+        "--uvicorn.log_level",
+        "debug",
+        "--uvicorn.access_log",
+        "true",
+        "--fastapi.host",
+        "localhost",
+        "--fastapi.port",
+        "8000",
+        "--fastapi.websocket.host",
+        "localhost",
+        "--fastapi.websocket.port",
+        "9000",
+        "--fastapi.request_log",
+        "true",
+        "--fastapi.request_body_log",
+        "true",
+        "--fastapi.cors.allow_methods",
+        "*",
+        "--fastapi.cors.allowed_origins",
+        "http://localhost:8000,http://localhost:8001,http://localhost:8002,http://localhost:9000"
+      ]
+    },
+    {
+      "name": "websocket",
+      "type": "debugpy",
+      "request": "launch",
+      "justMyCode": false,
+      "console": "integratedTerminal",
+      "python": "/usr/local/bin/python3",
+      "cwd": "/home",
+      "program": "${workspaceFolder}/back/server/websocket_worker/main.py",
+      "args": [
+        "--addr",
+        "0.0.0.0",
+        "--port",
+        "9000",
+        "--ping_interval",
+        "500",
+        "--ping_timeout",
+        "300",
+        "--log_level",
+        "debug"
+      ],
+      "env": {
+        // "PYTHONASYNCIODEBUG": "false"
+      }
+    },
+    {
+      "name": "python current file",
+      "type": "debugpy",
+      "request": "launch",
+      "console": "integratedTerminal",
+      "python": "/usr/local/bin/python3",
+      "cwd": "/home",
+      "justMyCode": false,
+      "program": "${file}"
+    },
+    {
+      "name": "🧪 Debug Pytest (all tests)",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "pytest",
+      "justMyCode": false,
+      "console": "integratedTerminal",
+      "args": [
+        "-s", // вывод в консоль
+        "-v", // подробный вывод
+        "tests" // папка с тестами
+      ],
+      "env": {
+        "PYTHONPATH": "${workspaceFolder}/back"
+      },
+      "cwd": "${workspaceFolder}"
+    },
+    {
+      "name": "🧩 Debug Single Test File",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "pytest",
+      "justMyCode": false,
+      "console": "integratedTerminal",
+      "args": [
+        "-s",
+        "-v",
+        "${file}" // запускает тесты в текущем открытом файле
+      ],
+      "env": {
+        "PYTHONPATH": "${workspaceFolder}/back"
+      },
+      "cwd": "${workspaceFolder}"
+    },
+    {
+      "name": "🐞 Debug Specific Test Function",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "pytest",
+      "justMyCode": false,
+      "console": "integratedTerminal",
+      "args": [
+        "-s",
+        "-v",
+        "${file}::${selectedText}" // выделяешь имя теста и жмёшь F5
+      ],
+      "env": {
+        "PYTHONPATH": "${workspaceFolder}/back"
+      },
+      "cwd": "${workspaceFolder}"
+    }
+  ]
+}

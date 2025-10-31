@@ -1,0 +1,40 @@
+[project]
+name = "redis-storage"
+version = "0.1.0"
+description = "Gauss Redis storage adapter"
+authors = [
+    { name = "Sergei Solomatov", email = "solomatovs@gmail.com>" },
+]
+requires-python = ">=3.10"
+dependencies = [
+    "gauss-core",
+    "redis>=5.0",
+    "fastapi>=0.115.0",
+    "async-timeout>=5.0.1",
+]
+readme = "README.md"
+
+[build-system]
+requires = ["poetry-core>=1.9"]
+build-backend = "poetry.core.masonry.api"
+
+
+### POETRY ###
+[tool.poetry]
+packages = [
+    { include = "gauss", from = "src" }
+]
+
+[tool.poetry.dependencies]
+gauss-core = { path = "../../gauss-core", develop = true }
+
+[tool.poetry.plugins."gauss.storages"]
+redis = "gauss.adapters.redis_storage:RedisStorage"
+
+
+[tool.poetry.group.dev.dependencies]
+# пакеты, которые нужны в среде разработки (не попадают в сборку проекта для prod)
+black = "^24.0" # автоформатирование кода.
+ruff = "^0.5"   # линтер и проверка качества кода.
+pytest = "^8.0" # фреймворк для тестов.
+pytest-asyncio = "^1.2.0"

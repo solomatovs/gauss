@@ -1,0 +1,51 @@
+[project]
+name = "gauss"
+version = "0.1.0"
+description = "Gauss monorepo workspace"
+license = "MIT"
+authors = [
+    { name = "Sergei Solomatov", email = "solomatovs@gmail.com>" },
+]
+requires-python = ">=3.10"
+dependencies = [
+    "gauss-core",
+    "gauss-server",
+]
+
+[project.optional-dependencies]
+all = ["redis-storage"]
+redis = ["redis-storage"]
+
+[build-system]
+requires = ["poetry-core>=1.9"]
+build-backend = "poetry.core.masonry.api"
+
+
+### POETRY ###
+[tool.poetry]
+package-mode = false # workspace
+requires-poetry = ">=1.8.0"
+
+[tool.poetry.requires-plugins]
+# используем плагин для организации workspace для monorepo
+poetry-monoranger-plugin = ">=0.4.1"
+
+[tool.poetry-monoranger-plugin]
+# указываем что плагин работает и где распологается корень monorepo
+enabled = true
+monorepo-root = "."
+version-pinning-rule = '=='  # Choose between "==", "~", "^", ">=,<"
+
+[tool.poetry.dependencies]
+# локальные зависимости, которые прописаны в project.dependencies и project.optional-dependencies
+# здесь указываем их путь на файловой системе от корня monorepo
+gauss-core = { path = "gauss-core", develop = true }
+gauss-server = { path = "gauss-server", develop = true }
+redis-storage = { path = "adapters/redis-storage", develop = true }
+
+[tool.poetry.group.dev.dependencies]
+# пакеты, которые нужны в среде разработки (не попадают в сборку проекта для prod)
+black = "^24.0" # автоформатирование кода.
+ruff = "^0.5"   # линтер и проверка качества кода.
+pytest = "^8.0" # фреймворк для тестов.
+pytest-asyncio = "^1.2.0"
