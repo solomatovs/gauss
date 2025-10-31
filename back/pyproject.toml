@@ -41,7 +41,7 @@ version-pinning-rule = '=='  # Choose between "==", "~", "^", ">=,<"
 # здесь указываем их путь на файловой системе от корня monorepo
 gauss-core = { path = "gauss-core", develop = true }
 gauss-server = { path = "gauss-server", develop = true }
-redis-storage = { path = "adapters/redis-storage", develop = true }
+redis-storage = { path = "adapters/redis-storage", optional = true, develop = true }
 
 [tool.poetry.group.dev.dependencies]
 # пакеты, которые нужны в среде разработки (не попадают в сборку проекта для prod)
@@ -49,3 +49,5 @@ black = "^24.0" # автоформатирование кода.
 ruff = "^0.5"   # линтер и проверка качества кода.
 pytest = "^8.0" # фреймворк для тестов.
 pytest-asyncio = "^1.2.0"
+build = "^1.3.0"
+debugpy = "^1.8.0"
