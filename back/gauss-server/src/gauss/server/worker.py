@@ -1,20 +1,20 @@
 import asyncio
 import socket
 from contextlib import asynccontextmanager
-from typing import Optional, List, Any
-import uvicorn
-from pydantic import BaseModel, Field
-from pydantic_settings import BaseSettings
+from typing import Any
 
-from gauss.server.fast_api import (
-    get_fast_api,
-    FastApiConfig,
-    FastAPI,
-)
+import uvicorn
 from gauss.core.domain.plugin import load_storage
+from gauss.core.helper.logging import LoggingHelper
 from gauss.core.helper.os import OsHelper
 from gauss.core.helper.socket import SocketHelper
-from gauss.core.helper.logging import LoggingHelper
+from gauss.server.fast_api import (
+    FastAPI,
+    FastApiConfig,
+    get_fast_api,
+)
+from pydantic import BaseModel, Field
+from pydantic_settings import BaseSettings
 
 
 class ConnectionRequest(BaseModel):
@@ -56,7 +56,7 @@ class WorkerStats(BaseModel):
     uptime_seconds: float = Field(..., description="Uptime in seconds")
     start_time: str = Field(..., description="Start time ISO format")
     requests_count: int = Field(..., description="Total requests processed")
-    memory_usage_mb: Optional[float] = Field(None, description="Memory usage in MB")
+    memory_usage_mb: float | None = Field(None, description="Memory usage in MB")
 
 
 class HealthResponse(BaseModel):
@@ -85,7 +85,7 @@ class ValidationErrorResponse(BaseModel):
     """Ответ на ошибку валидации"""
 
     detail: str = Field(..., description="Error description")
-    errors: List[Any] = Field(..., description="Validation errors")
+    errors: list[Any] = Field(..., description="Validation errors")
     worker_id: str = Field(..., description="Worker identifier")
 
 
@@ -144,7 +144,7 @@ class HttpWorker:
 
     def __init__(self, config: HttpConfig):
         self.config = config
-        self._serve_task: Optional[asyncio.Task] = None
+        self._serve_task: asyncio.Task | None = None
         self._logger = LoggingHelper.getLogger("http")
 
         self.server, self._socket = self._create_server_sync(self.config, self._logger)

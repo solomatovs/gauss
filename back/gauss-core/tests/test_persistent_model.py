@@ -1,7 +1,7 @@
-from typing import Optional, Any
+from typing import Any
+
 import pytest
 from gauss.core.domain.kv_model import KVModel, MemoryKVStorage
-
 
 # --- Тестовые модели -------------------------------------------------------------
 
@@ -9,12 +9,12 @@ from gauss.core.domain.kv_model import KVModel, MemoryKVStorage
 class Address(KVModel):
     street: str
     city: str
-    zip_code: Optional[str] = None
+    zip_code: str | None = None
 
 
 class Contact(KVModel):
     email: str
-    phone: Optional[str] = None
+    phone: str | None = None
 
 
 class User(KVModel):
@@ -36,7 +36,7 @@ class Department(KVModel):
 class Company(KVModel):
     name: str
     departments: list[Department] = []
-    ceo: Optional[User] = None
+    ceo: User | None = None
 
 
 class Organization(KVModel):
@@ -1006,7 +1006,7 @@ async def test_attribute_error_on_nonexistent_field():
     # Несуществующее поле выбрасывает AttributeError
     try:
         _ = user.non_existent_field
-        assert False, "Should have raised AttributeError"
+        raise AssertionError("Should have raised AttributeError")
     except AttributeError as e:
         assert "non_existent_field" in str(e)
 

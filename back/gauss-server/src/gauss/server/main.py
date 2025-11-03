@@ -1,8 +1,8 @@
 import asyncio
 
-from gauss.core.helper.os import OsHelper
 from gauss.core.helper.config import ConfigHelper
 from gauss.core.helper.logging import LoggingHelper
+from gauss.core.helper.os import OsHelper
 from gauss.server.worker import (
     HttpConfig,
     HttpWorker,

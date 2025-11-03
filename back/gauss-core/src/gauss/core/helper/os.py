@@ -1,10 +1,10 @@
-import sys
+import asyncio
 import os
 import signal
+import sys
 import uuid
-import asyncio
-
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 
 class OsHelper:

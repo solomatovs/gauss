@@ -1,91 +1,92 @@
+import array
 import socket
 import struct
-import array
-from typing import List, Tuple, Optional, Iterable
+from collections.abc import Iterable
+
 from pydantic import BaseModel, Field, field_validator
 
 
 class SoOpt(BaseModel):
     # --- COMMON ---
     # Можно повторно биндиться на тот же адрес/порт после закрытия сокета
-    SO_REUSEADDR: Optional[int] = Field(
+    SO_REUSEADDR: int | None = Field(
         default=None,
         alias="reuseaddr",
         description="Allow reuse of local addresses after socket close",
         json_schema_extra={"level": socket.SOL_SOCKET, "opt": socket.SO_REUSEADDR},
     )
     # Несколько процессов/потоков могут слушать один и тот же порт (Linux-specific)
-    SO_REUSEPORT: Optional[int] = Field(
+    SO_REUSEPORT: int | None = Field(
         default=None,
         alias="reuseport",
         description="Allow multiple sockets to bind to the same port",
         json_schema_extra={"level": socket.SOL_SOCKET, "opt": socket.SO_REUSEPORT},
     )
     # Включить TCP keep-alive для проверки активности соединения
-    SO_KEEPALIVE: Optional[int] = Field(
+    SO_KEEPALIVE: int | None = Field(
         default=None,
         alias="keepalive",
         description="Enable sending of TCP keepalive probes",
         json_schema_extra={"level": socket.SOL_SOCKET, "opt": socket.SO_KEEPALIVE},
     )
     # Управление поведением close(): (onoff, linger_time)
-    SO_LINGER: Optional[tuple[int, int]] = Field(
+    SO_LINGER: tuple[int, int] | None = Field(
         default=None,
         alias="linger",
         description="Control socket close behavior (on/off, linger time)",
         json_schema_extra={"level": socket.SOL_SOCKET, "opt": socket.SO_LINGER},
     )
     # Размер буфера приёма
-    SO_RCVBUF: Optional[int] = Field(
+    SO_RCVBUF: int | None = Field(
         default=None,
         alias="rcvbuf",
         description="Size of the receive buffer (bytes)",
         json_schema_extra={"level": socket.SOL_SOCKET, "opt": socket.SO_RCVBUF},
     )
     # Размер буфера отправки
-    SO_SNDBUF: Optional[int] = Field(
+    SO_SNDBUF: int | None = Field(
         default=None,
         alias="sndbuf",
         description="Size of the send buffer (bytes)",
         json_schema_extra={"level": socket.SOL_SOCKET, "opt": socket.SO_SNDBUF},
     )
     # Разрешить отправку broadcast-пакетов
-    SO_BROADCAST: Optional[int] = Field(
+    SO_BROADCAST: int | None = Field(
         default=None,
         alias="broadcast",
         description="Allow transmission of broadcast messages (UDP)",
         json_schema_extra={"level": socket.SOL_SOCKET, "opt": socket.SO_BROADCAST},
     )
     # Встраивать out-of-band данные в основной поток
-    SO_OOBINLINE: Optional[int] = Field(
+    SO_OOBINLINE: int | None = Field(
         default=None,
         alias="oobinline",
         description="Receive out-of-band data in the normal data stream",
         json_schema_extra={"level": socket.SOL_SOCKET, "opt": socket.SO_OOBINLINE},
     )
     # Минимальное количество данных для срабатывания read()
-    SO_RCVLOWAT: Optional[int] = Field(
+    SO_RCVLOWAT: int | None = Field(
         default=None,
         alias="rcvlowat",
         description="Minimum number of bytes in the input queue before read()",
         json_schema_extra={"level": socket.SOL_SOCKET, "opt": socket.SO_RCVLOWAT},
     )
     # Минимальное количество данных для срабатывания write()
-    SO_SNDLOWAT: Optional[int] = Field(
+    SO_SNDLOWAT: int | None = Field(
         default=None,
         alias="sndlowat",
         description="Minimum number of bytes in the output queue before write()",
         json_schema_extra={"level": socket.SOL_SOCKET, "opt": socket.SO_SNDLOWAT},
     )
     # Таймаут операций чтения (в секундах)
-    SO_RCVTIMEO: Optional[float] = Field(
+    SO_RCVTIMEO: float | None = Field(
         default=None,
         alias="rcvtimeo",
         description="Timeout value for input operations (seconds)",
         json_schema_extra={"level": socket.SOL_SOCKET, "opt": socket.SO_RCVTIMEO},
     )
     # Таймаут операций записи (в секундах)
-    SO_SNDTIMEO: Optional[float] = Field(
+    SO_SNDTIMEO: float | None = Field(
         default=None,
         alias="sndtimeo",
         description="Timeout value for output operations (seconds)",
@@ -117,42 +118,42 @@ class SoOpt(BaseModel):
 class TcpOpts(BaseModel):
     # --- TCP OPTS ---
     # Отключить алгоритм Нейгла (ускоряет маленькие пакеты)
-    TCP_NODELAY: Optional[int] = Field(
+    TCP_NODELAY: int | None = Field(
         default=None,
         alias="nodelay",
         description="Disable Nagle's algorithm (send small packets immediately)",
         json_schema_extra={"level": socket.IPPROTO_TCP, "opt": socket.TCP_NODELAY},
     )
     # Буферизовать данные до flush (Linux-specific)
-    TCP_CORK: Optional[int] = Field(
+    TCP_CORK: int | None = Field(
         default=None,
         alias="cork",
         description="Control packet coalescing before transmission (Linux only)",
         json_schema_extra={"level": socket.IPPROTO_TCP, "opt": socket.TCP_CORK},
     )
     # Быстрый ACK (уменьшает задержку ACK-пакетов)
-    TCP_QUICKACK: Optional[int] = Field(
+    TCP_QUICKACK: int | None = Field(
         default=None,
         alias="quickack",
         description="Enable quick ACKs to reduce ACK delay",
         json_schema_extra={"level": socket.IPPROTO_TCP, "opt": socket.TCP_QUICKACK},
     )
     # Время простоя до начала keepalive (секунды)
-    TCP_KEEPIDLE: Optional[int] = Field(
+    TCP_KEEPIDLE: int | None = Field(
         default=None,
         alias="keepidle",
         description="Idle time before sending TCP keepalive probes (seconds)",
         json_schema_extra={"level": socket.IPPROTO_TCP, "opt": socket.TCP_KEEPIDLE},
     )
     # Интервал между keepalive-пакетами (секунды)
-    TCP_KEEPINTVL: Optional[int] = Field(
+    TCP_KEEPINTVL: int | None = Field(
         default=None,
         alias="keepintvl",
         description="Interval between TCP keepalive probes (seconds)",
         json_schema_extra={"level": socket.IPPROTO_TCP, "opt": socket.TCP_KEEPINTVL},
     )
     # Количество неудачных keepalive до разрыва
-    TCP_KEEPCNT: Optional[int] = Field(
+    TCP_KEEPCNT: int | None = Field(
         default=None,
         alias="keepcnt",
         description="Number of failed keepalive probes before connection drop",
@@ -180,7 +181,7 @@ class TcpOpts(BaseModel):
 class IpOpts(BaseModel):
     # --- IP ---
     # TTL для исходящих IP-пакетов
-    IP_TTL: Optional[int] = Field(
+    IP_TTL: int | None = Field(
         default=None,
         alias="ttl",
         description="Set Time-To-Live (TTL) for outgoing IP packets",
@@ -188,7 +189,7 @@ class IpOpts(BaseModel):
     )
 
     # ToS/DSCP метка для QoS
-    IP_TOS: Optional[int] = Field(
+    IP_TOS: int | None = Field(
         default=None,
         alias="tos",
         description="Set Type of Service (ToS) / DSCP for outgoing packets",
@@ -212,7 +213,7 @@ class IpOpts(BaseModel):
 class Ipv6Opts(BaseModel):
     # --- IPv6 only ---
     # Только IPv6 (без IPv4-mapped адресов)
-    IPV6_V6ONLY: Optional[int] = Field(
+    IPV6_V6ONLY: int | None = Field(
         default=None,
         alias="v6only",
         description="Restrict socket to IPv6 only (disable IPv4-mapped addresses)",
@@ -325,7 +326,7 @@ class SocketHelper:
             return False
 
     @staticmethod
-    def send_fds(sock: socket.socket, fds: List[int], message: bytes = b"FD") -> None:
+    def send_fds(sock: socket.socket, fds: list[int], message: bytes = b"FD") -> None:
         """
         Отправить файловые дескрипторы через Unix domain socket.
 
@@ -372,7 +373,7 @@ class SocketHelper:
     @staticmethod
     def recv_fds(
         sock: socket.socket, maxfds: int = 10, bufsize: int = 1024
-    ) -> Tuple[bytes, List[int]]:
+    ) -> tuple[bytes, list[int]]:
         """
         Получить файловые дескрипторы через Unix domain socket.
 

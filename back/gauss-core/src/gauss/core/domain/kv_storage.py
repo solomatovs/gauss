@@ -1,11 +1,11 @@
-from typing import Dict, Any
+from typing import Any
 
 from gauss.core.ports.kv_storage import BaseKVStorage
 
 
 class MemoryKVStorage(BaseKVStorage):
     def __init__(self):
-        self._data: Dict[str, Any] = {}
+        self._data: dict[str, Any] = {}
 
     async def get(self, key: str) -> Any:
         return self._data.get(key)
@@ -17,7 +17,7 @@ class MemoryKVStorage(BaseKVStorage):
         if key in self._data:
             del self._data[key]
 
-    async def get_all(self, prefix: str) -> Dict[str, Any]:
+    async def get_all(self, prefix: str) -> dict[str, Any]:
         return {k: v for k, v in self._data.items() if k.startswith(prefix)}
 
     async def delete_by_prefix(self, prefix: str) -> None:

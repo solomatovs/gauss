@@ -1,7 +1,6 @@
-from typing import Dict, Any
+from typing import Any
 
 import redis.asyncio as aioredis
-
 from gauss.core.ports.kv_storage import BaseKVStorage
 
 
@@ -18,10 +17,10 @@ class RedisStorage(BaseKVStorage):
     async def delete(self, key: str) -> None:
         await self._client.delete(key)
 
-    async def get_all(self, prefix: str) -> Dict[str, Any]:
+    async def get_all(self, prefix: str) -> dict[str, Any]:
         keys = await self._client.keys(f"{prefix}*")
         values = await self._client.mget(keys)
-        return dict(zip(keys, values))
+        return dict(zip(keys, values, strict=False))
 
     async def delete_by_prefix(self, prefix: str) -> None:
         keys = await self._client.keys(f"{prefix}*")

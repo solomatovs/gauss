@@ -1,5 +1,5 @@
-import signal
 import asyncio
+import signal
 
 
 class CancellableTaskGroup(asyncio.TaskGroup):

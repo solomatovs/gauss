@@ -1,17 +1,17 @@
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Optional, Type, TypeVar, Iterable
-from typing import cast
+from typing import TypeVar, cast
 
 from pydantic import Field
 from pydantic_settings import (
     BaseSettings,
+    CliSettingsSource,
+    DotEnvSettingsSource,
+    JsonConfigSettingsSource,
     PydanticBaseSettingsSource,
     SettingsConfigDict,
     TomlConfigSettingsSource,
     YamlConfigSettingsSource,
-    JsonConfigSettingsSource,
-    DotEnvSettingsSource,
-    CliSettingsSource,
 )
 
 T = TypeVar("T", bound=BaseSettings)
@@ -20,8 +20,8 @@ T = TypeVar("T", bound=BaseSettings)
 class ConfigHelper:
     @staticmethod
     def load(
-        settings_cls: Type[T],
-        config_files: Optional[Iterable[str | Path]] = None,
+        settings_cls: type[T],
+        config_files: Iterable[str | Path] | None = None,
         env_prefix: str = "",
         case_sensitive: bool = False,
     ) -> T:

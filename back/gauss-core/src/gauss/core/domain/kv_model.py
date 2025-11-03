@@ -1,11 +1,10 @@
-from typing import Dict, Any, get_origin, get_args, Union, Optional
 from enum import Enum
+from typing import Any, Optional, Union, get_args, get_origin
 
-from pydantic import BaseModel, PrivateAttr, ConfigDict
-
-from gauss.core.ports.kv_storage import BaseKVStorage
 from gauss.core.domain.kv_storage import MemoryKVStorage
 from gauss.core.helper.asyncio import AsyncioHelper
+from gauss.core.ports.kv_storage import BaseKVStorage
+from pydantic import BaseModel, ConfigDict, PrivateAttr
 
 
 class ValueType(Enum):
@@ -98,7 +97,7 @@ class KVModel(BaseModel):
             return ValueType.PYDANTIC_MODEL
         elif isinstance(value, dict):
             return ValueType.DICT
-        elif isinstance(value, (list, tuple)):
+        elif isinstance(value, (list | tuple)):
             return ValueType.LIST
         else:
             return ValueType.SCALAR
@@ -344,7 +343,7 @@ class KVModel(BaseModel):
         result = {}
         prefix_with_dot = f"{prefix}."
 
-        for full_key, value in all_keys.items():
+        for full_key, _value in all_keys.items():
             if full_key.startswith(prefix_with_dot):
                 dict_key = (
                     full_key[len(prefix_with_dot) :]
@@ -527,7 +526,7 @@ class KVModel(BaseModel):
             return False
         return value
 
-    async def get_flat_representation(self) -> Dict[str, Any]:
+    async def get_flat_representation(self) -> dict[str, Any]:
         if not self._is_storage_bound():
             return {}
         return await self._storage.get_all(self._key_prefix)

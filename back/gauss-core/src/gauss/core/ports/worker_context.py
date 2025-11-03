@@ -1,8 +1,8 @@
 from abc import ABC, abstractmethod
 from datetime import datetime
-from pydantic import BaseModel, Field, field_validator, model_validator
 
 from gauss.core.helper.os import OsHelper
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class WorkerContext(ABC):

@@ -1,7 +1,6 @@
+from gauss.core.helper.logging import LoggingHelper
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
-
-from gauss.core.helper.logging import LoggingHelper
 
 
 class DetailedLoggingMiddleware(BaseHTTPMiddleware):

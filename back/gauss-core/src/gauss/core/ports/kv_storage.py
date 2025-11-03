@@ -1,4 +1,4 @@
-from typing import Dict, Any
+from typing import Any
 
 
 class BaseKVStorage:
@@ -11,7 +11,7 @@ class BaseKVStorage:
     async def delete(self, key: str) -> None:
         raise NotImplementedError
 
-    async def get_all(self, prefix: str) -> Dict[str, Any]:
+    async def get_all(self, prefix: str) -> dict[str, Any]:
         raise NotImplementedError
 
     async def delete_by_prefix(self, prefix: str) -> None:

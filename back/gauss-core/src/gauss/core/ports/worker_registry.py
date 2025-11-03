@@ -1,5 +1,4 @@
 from abc import ABC, abstractmethod
-from typing import List, Optional
 
 from gauss.core.ports.worker_context import WorkerContext
 
@@ -10,12 +9,12 @@ class WorkerRegistry(ABC):
     """
 
     @abstractmethod
-    async def list_workers(self) -> List[WorkerContext]:
+    async def list_workers(self) -> list[WorkerContext]:
         """Вернуть список всех известных воркеров."""
         pass
 
     @abstractmethod
-    async def get_worker(self, worker_id: str) -> Optional[WorkerContext]:
+    async def get_worker(self, worker_id: str) -> WorkerContext | None:
         """Получить метаинформацию конкретного воркера по ID."""
         pass
 

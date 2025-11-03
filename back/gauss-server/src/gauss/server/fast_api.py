@@ -1,19 +1,18 @@
 import time
 from datetime import datetime
-from typing import Optional, List, Any
+from typing import Any
 
-from pydantic import BaseModel, Field
-from fastapi import FastAPI, Depends, HTTPException, Request, status
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.middleware.trustedhost import TrustedHostMiddleware
-from fastapi.middleware.gzip import GZipMiddleware
-from fastapi.responses import JSONResponse
+from fastapi import Depends, FastAPI, HTTPException, Request, status
 from fastapi.exceptions import RequestValidationError
-
-from gauss.core.helper.os import OsHelper
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
+from fastapi.responses import JSONResponse
 from gauss.core.helper.logging import LoggingHelper
-from gauss.server.middleware.detailed_logging import DetailedLoggingMiddleware
+from gauss.core.helper.os import OsHelper
 from gauss.core.ports.worker_context import WorkerContext
+from gauss.server.middleware.detailed_logging import DetailedLoggingMiddleware
+from pydantic import BaseModel, Field
 
 
 class ConnectionRequest(BaseModel):
@@ -55,7 +54,7 @@ class WorkerStats(BaseModel):
     uptime_seconds: float = Field(..., description="Uptime in seconds")
     start_time: str = Field(..., description="Start time ISO format")
     requests_count: int = Field(..., description="Total requests processed")
-    memory_usage_mb: Optional[float] = Field(None, description="Memory usage in MB")
+    memory_usage_mb: float | None = Field(None, description="Memory usage in MB")
 
 
 class HealthResponse(BaseModel):
@@ -84,7 +83,7 @@ class ValidationErrorResponse(BaseModel):
     """Ответ на ошибку валидации"""
 
     detail: str = Field(..., description="Error description")
-    errors: List[Any] = Field(..., description="Validation errors")
+    errors: list[Any] = Field(..., description="Validation errors")
     worker_id: str = Field(..., description="Worker identifier")
 
 
@@ -103,7 +102,7 @@ class ShutdownResponse(BaseModel):
 
 
 class TrustedHostConfig(BaseModel):
-    allowed_hosts: List[Any] = Field(
+    allowed_hosts: list[Any] = Field(
         default=[
             "localhost",
             "127.0.0.1",
@@ -115,7 +114,7 @@ class TrustedHostConfig(BaseModel):
 
 
 class CORSConfig(BaseModel):
-    allowed_origins: List[Any] = Field(
+    allowed_origins: list[Any] = Field(
         default=[
             "http://localhost:8000",
             "http://localhost:9000",
@@ -123,10 +122,10 @@ class CORSConfig(BaseModel):
         description="allowed_origins",
     )
     allow_credentials: bool = Field(default=True, description="allow_credentials")
-    allow_methods: List[Any] = Field(
+    allow_methods: list[Any] = Field(
         default=["GET", "POST", "OPTIONS"], description="allow_methods"
     )
-    allow_headers: List[Any] = Field(default=["*"], description="allow_headers")
+    allow_headers: list[Any] = Field(default=["*"], description="allow_headers")
     max_age: int = Field(default=3600, description="max_age")
 
 
@@ -304,8 +303,9 @@ def get_fast_api(config: FastApiConfig, lifespan) -> FastAPI:
         except Exception as e:
             logger.exception("failed to create web socket")
             raise HTTPException(
-                status_code=500, detail=f"failed to create web socket: {str(e)}"
-            )
+                status_code=500,
+                detail=f"failed to create web socket: {str(e)}"
+            ) from e
 
     @app.get("/stats", response_model=WorkerStats)
     async def get_stats(cx: WorkerContext = Depends(get_context)):
