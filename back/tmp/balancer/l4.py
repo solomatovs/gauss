@@ -26,13 +26,13 @@ class BalancerConfig(BaseSettings):
     def validate_ports(cls, port):
         if not port:
             raise ValueError("Список портов не может быть пустым")
-        
+
         if not isinstance(port, int):
             raise ValueError("Порт должен быть int")
-        
+
         if not (1 <= port <= 65535):
             raise ValueError(f"Некорректный порт: {port}")
-        
+
         return port
 
 
@@ -41,7 +41,7 @@ class BalancerContext(BaseModel):
 
     worker_id: str = Field(
         default_factory=lambda: OsHelper.generate_identifier(),
-        description="Уникальный идентификатор воркера"
+        description="Уникальный идентификатор воркера",
     )
     connections: Dict[int, Dict] = Field(default={})
     is_shutting_down: bool = Field(
@@ -63,6 +63,7 @@ class BalancerContext(BaseModel):
         client_sock.close()
         logger.info(f"unregister connection from {addr}")
 
+
 class LoadBalancer:
     def __init__(self, config: BalancerConfig):
         self.config = config
@@ -70,14 +71,16 @@ class LoadBalancer:
 
         # Настройка обработчиков сигналов
         OsHelper.setup_signals(self._signal_handler)
-        
-        logger.info(f"L4 LoadBalancer {self.cx.worker_id} initialized (PID: {OsHelper.getpid()})")
-    
+
+        logger.info(
+            f"L4 LoadBalancer {self.cx.worker_id} initialized (PID: {OsHelper.getpid()})"
+        )
+
     def _signal_handler(self, signum: int, frame) -> None:
         """Обработчик системных сигналов"""
         logger.info(f"Worker {self.cx.worker_id}: Received signal {signum}")
         self.cx.is_shutting_down = True
-    
+
     @staticmethod
     def _create_sock(config: BalancerConfig):
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -102,7 +105,7 @@ class LoadBalancer:
         except RuntimeError:
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
-        
+
         self._serve_task = loop.create_task(
             self._serve_loop(),
         )
@@ -128,7 +131,7 @@ class LoadBalancer:
                 await self._serve_task
             except asyncio.CancelledError:
                 pass
-        
+
         self.cx.sock.close()
 
     async def _serve_loop(self):
@@ -147,10 +150,9 @@ class LoadBalancer:
 
                 # передаем дескриптор воркеру
                 await self._dispatch_connection(client_sock, addr)
-                
+
                 # удаляем соединение
                 self.cx.unregister_connection(client_sock, addr)
-
 
     async def _dispatch_connection(self, client_sock: socket.socket, addr):
         """

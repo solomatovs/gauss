@@ -11,7 +11,8 @@ from server.websocket_worker.worker import (
 
 async def simple_run() -> None:
     """Простой запуск WebSocket воркера"""
-    config = ConfigHelper.load(WebsocketConfig,
+    config = ConfigHelper.load(
+        WebsocketConfig,
         config_files=ConfigHelper.typical_config_files(),
     )
 
@@ -20,7 +21,7 @@ async def simple_run() -> None:
     logger = LoggingHelper.getLogger("main")
 
     exit_code = 0
-    
+
     try:
         async with WebSocketWorker.create(config) as worker:
             await worker.run()
@@ -30,9 +31,11 @@ async def simple_run() -> None:
 
     OsHelper.exit(exit_code)
 
+
 def main() -> None:
     """Главная функция для запуска WebSocket воркера"""
     asyncio.run(simple_run())
+
 
 if __name__ == "__main__":
     main()

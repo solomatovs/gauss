@@ -15,7 +15,9 @@ UNAME_S := $(shell uname -s)
 # Определение Python
 # -----------------------------
 PYTHON_BIN := $(shell \
-	if command -v python3 >/dev/null 2>&1; then \
+	if [ -f "$$HOME/.local/bin/python3" ]; then \
+		echo "$$HOME/.local/bin/python3"; \
+	elif command -v python3 >/dev/null 2>&1; then \
 		command -v python3; \
 	elif command -v python >/dev/null 2>&1; then \
 		command -v python; \
@@ -24,9 +26,7 @@ PYTHON_BIN := $(shell \
 	elif [ -x "/opt/homebrew/bin/python3" ]; then \
 		echo "/opt/homebrew/bin/python3"; \
 	else \
-		echo "Python не найден. Устанавливаем..."; \
 		if [ "$$(uname -s)" = "Darwin" ]; then \
-			echo "==> macOS detected"; \
 			brew install python || true; \
 		elif [ -f "/etc/debian_version" ]; then \
 			sudo apt update >/dev/null 2>&1 && sudo apt install -y python3 >/dev/null 2>&1; \
@@ -44,10 +44,10 @@ PYTHON_BIN := $(shell \
 # Переменная POETRY_BIN
 # -----------------------------
 POETRY_BIN := $(shell \
-	if command -v poetry >/dev/null 2>&1; then \
-		command -v poetry; \
-	elif [ -f "$$HOME/.local/bin/poetry" ]; then \
+	if [ -f "$$HOME/.local/bin/poetry" ]; then \
 		echo "$$HOME/.local/bin/poetry"; \
+	elif command -v poetry >/dev/null 2>&1; then \
+		command -v poetry; \
 	else \
 		if [ "$(UNAME_S)" = "Darwin" ]; then \
 			"/Applications/Python 3.11/Install Certificates.command" >/dev/null 2>&1 || true; \
@@ -64,8 +64,8 @@ POETRY_BIN := $(shell \
 .PHONY: help
 help:
 	@echo "Makefile команды:"
-	@echo "  make show-poetry.  - Показать где лежит python"
-	@echo "  make show-poetry.  - Показать где лежит poetry"
+	@echo "  make show-python   - Показать где лежит python"
+	@echo "  make show-poetry   - Показать где лежит poetry"
 	@echo "  make setup         - Установить все зависимости (dev + extras) в .venv"
 	@echo "  make clean         - Очистить .venv, lock файлы и .poetry"
 	@echo "  make format        - Отформатировать код (black)"

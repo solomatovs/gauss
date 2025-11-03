@@ -2,7 +2,7 @@
   "version": "0.2.0",
   "configurations": [
     {
-      "name": "react",
+      "name": "front",
       // используем запуск node а не chrome
       "type": "node",
       "request": "launch",
@@ -30,7 +30,7 @@
       }
     },
     {
-      "name": "http",
+      "name": "back",
       "type": "debugpy",
       "request": "launch",
       "console": "integratedTerminal",
@@ -38,7 +38,7 @@
       "cwd": "/home",
       "justMyCode": false,
       "autoStartBrowser": false,
-      "program": "${workspaceFolder}/back/server/http_worker/main.py",
+      "program": "${workspaceFolder}/back/gauss-server/src/gauss/server/main.py",
       "args": [
         "--uvicorn.addr",
         "0.0.0.0",
@@ -106,6 +106,7 @@
       "type": "debugpy",
       "request": "launch",
       "module": "pytest",
+      "python": "${workspaceFolder}/back/bin/python3",
       "justMyCode": false,
       "console": "integratedTerminal",
       "args": [

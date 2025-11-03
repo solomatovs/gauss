@@ -6,7 +6,11 @@ from enum import Enum
 
 from pydantic import BaseModel, Field
 from websockets.asyncio.server import ServerConnection
-from websockets.exceptions import ConnectionClosed, ConnectionClosedError, ConnectionClosedOK
+from websockets.exceptions import (
+    ConnectionClosed,
+    ConnectionClosedError,
+    ConnectionClosedOK,
+)
 
 from server.helper.os import OsHelper
 from server.helper.socket import SocketHelper
@@ -16,6 +20,7 @@ from server.helper.asyncio import AsyncioHelper
 
 class ClientState(Enum):
     """Состояния жизненного цикла клиента"""
+
     CREATED = "created"
     RUNNING = "running"
     SHUTTING_DOWN = "shutting_down"
@@ -24,20 +29,29 @@ class ClientState(Enum):
 
 class ClientContext(BaseModel):
     """Контекст отдельного клиента"""
+
     model_config = {"arbitrary_types_allowed": True}
-    
+
     id: str = Field(..., description="Уникальный ID клиента")
     remote_addr: str = Field(..., description="Адрес клиента")
-    connected_at: datetime = Field(default_factory=datetime.now, description="Время подключения")
-    last_message_at: datetime = Field(default_factory=datetime.now, description="Время последнего сообщения")
+    connected_at: datetime = Field(
+        default_factory=datetime.now, description="Время подключения"
+    )
+    last_message_at: datetime = Field(
+        default_factory=datetime.now, description="Время последнего сообщения"
+    )
     # is_active: bool = Field(default=True, description="Флаг активности клиента")
-    connection_count: int = Field(default=0, description="Счетчик для демонстрации работы", ge=0)
-    start_time: datetime = Field(default_factory=datetime.now, description="Время запуска воркера")
+    connection_count: int = Field(
+        default=0, description="Счетчик для демонстрации работы", ge=0
+    )
+    start_time: datetime = Field(
+        default_factory=datetime.now, description="Время запуска воркера"
+    )
 
     def uptime_seconds(self) -> float:
         """Время работы воркера в секундах"""
         return (datetime.now() - self.start_time).total_seconds()
-    
+
     def increment_connection_count(self, count: int = 1) -> None:
         """Увеличить счетчик подключений"""
         if count < 0:
@@ -51,14 +65,16 @@ class ClientContext(BaseModel):
 
 class ClientMessage(BaseModel):
     """Сообщение от клиента к воркеру с командой для выполнения"""
+
     action: str = Field(..., description="Действие для выполнения", min_length=1)
-    
+
     class Config:
         extra = "allow"  # Разрешить дополнительные поля
 
 
 class StateUpdateMessage(BaseModel):
     """Сообщение с обновлением состояния счетчика"""
+
     type: str = Field(default="state_update", description="Тип сообщения")
     count: int = Field(..., description="Текущее значение счетчика", ge=0)
     client_id: str = Field(..., description="Идентификатор воркера")
@@ -67,6 +83,7 @@ class StateUpdateMessage(BaseModel):
 
 class ClientInfoMessage(BaseModel):
     """Информационное сообщение о состоянии воркера"""
+
     type: str = Field(default="worker_info", description="Тип сообщения")
     client_id: str = Field(..., description="Идентификатор воркера")
     port: int = Field(..., description="Порт сервера", ge=1, le=65535)
@@ -77,30 +94,30 @@ class ClientInfoMessage(BaseModel):
 
 class ErrorMessage(BaseModel):
     """Сообщение об ошибке"""
+
     type: str = Field(default="error", description="Тип сообщения")
     message: str = Field(..., description="Текст ошибки", min_length=1)
     client_id: str = Field(..., description="Идентификатор воркера")
 
 
-
 class Client:
     """
     Клиент WebSocket соединения.
-    
+
     Ответственность:
     - Управление одним WebSocket соединением
     - Обработка входящих сообщений
     - Отправка исходящих сообщений
     - Graceful shutdown при отключении
     """
-    
+
     def __init__(self, websocket: ServerConnection):
         self._websocket = websocket
         self.ctx = self._context_create(websocket)
-        
+
         # Очередь для исходящих сообщений (если нужна буферизация)
         self._send_queue = asyncio.Queue()
-        
+
         # Логирование
         self._logger = LoggingHelper.getLogger(f"client: {self.ctx.id}")
 
@@ -125,24 +142,24 @@ class Client:
     async def _cleanup(self):
         """Очистка ресурсов клиента"""
         self._logger.info("cleaning up...")
-        
+
         # Закрываем соединение если еще не закрыто
         if self._socket_still_alive():
             await self._close_connection(1000, "cleanup")
-        
+
         # Очищаем очередь
         while not self._send_queue.empty():
             try:
                 self._send_queue.get_nowait()
             except asyncio.QueueEmpty:
                 break
-        
+
         self._logger.info("cleanup")
 
     def _socket_still_alive(self):
         # CONNECTING или OPEN
         return self._websocket.state.value <= 1
-    
+
     async def _close_connection(self, code: int, reason: str):
         """Закрытие WebSocket соединения"""
         try:
@@ -158,9 +175,11 @@ class Client:
         try:
             # Отправляем начальное состояние
             await self._send_initial_state()
-            
+
             # Запускаем параллельные задачи через TaskGroup
-            async with AsyncioHelper.cancellable_task_group(shutdown_event, asyncio.FIRST_COMPLETED) as tg:
+            async with AsyncioHelper.cancellable_task_group(
+                shutdown_event, asyncio.FIRST_COMPLETED
+            ) as tg:
                 tg.create_task(self._receive_messages())
                 tg.create_task(self._send_message())
 
@@ -211,9 +230,9 @@ class Client:
             # Парсинг JSON
             data = json.loads(message)
             client_message = ClientMessage(**data)
-            
+
             self._logger.debug(f"received action: {client_message.action}")
-            
+
             # Обработка действий
             match client_message.action:
                 case "increment":
@@ -226,7 +245,7 @@ class Client:
                     await self._handle_ping()
                 case _:
                     await self._send_error(f"unknown action: {client_message.action}")
-        
+
         except json.JSONDecodeError as e:
             self._logger.error(f"invalid json: {e}")
             await self._send_error("invalid json format")
@@ -265,7 +284,7 @@ class Client:
         message = StateUpdateMessage(
             count=self.ctx.connection_count,
             client_id=self.ctx.id,
-            timestamp=datetime.now().isoformat()
+            timestamp=datetime.now().isoformat(),
         )
         await self.send_json(message.model_dump())
 
@@ -276,16 +295,13 @@ class Client:
             port=9000,  # TODO: получать из конфигурации
             pid=OsHelper.getpid(),
             uptime_seconds=self.ctx.uptime_seconds(),
-            count=self.ctx.connection_count
+            count=self.ctx.connection_count,
         )
         await self.send_json(message.model_dump())
 
     async def _send_error(self, error_text: str):
         """Отправка сообщения об ошибке"""
-        message = ErrorMessage(
-            message=error_text,
-            client_id=self.ctx.id
-        )
+        message = ErrorMessage(message=error_text, client_id=self.ctx.id)
         await self.send_json(message.model_dump())
 
     async def send(self, message: str | bytes):

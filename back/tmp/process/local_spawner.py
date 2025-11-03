@@ -8,15 +8,14 @@ from server.process.base_spawner import BaseSpawner, DaemonProcess
 
 # настройка логирования
 logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
 
 
 class LocalSpawner(BaseSpawner):
     """Локальный spawner для запуска процессов"""
-    
+
     def spawn(self, cmd: typing.List[str]) -> DaemonProcess:
         """Запустить процесс локально как демон"""
         try:
@@ -40,7 +39,7 @@ class LocalSpawner(BaseSpawner):
 
             logger.info(f"Spawned process PID {proc.pid} with TTY {slave_name}")
             return DaemonProcess(proc.pid, slave_name)
-            
+
         except Exception as e:
             logger.error(f"Failed to spawn process: {e}")
             raise RuntimeError(f"Failed to spawn process: {e}")
@@ -90,4 +89,3 @@ class LocalSpawner(BaseSpawner):
 #     os.close(slave_fd)  # в родителе slave не нужен
 
 #     return DetachedProcess(proc.pid, master_fd, slave_name)
-

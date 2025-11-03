@@ -10,23 +10,24 @@ from server.helper.config import ConfigHelper
 
 # настройка логирования
 logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
 
+
 async def run_simple() -> None:
     """Простой запуск HTTP воркера"""
-    config = ConfigHelper.load(BalancerConfig,
+    config = ConfigHelper.load(
+        BalancerConfig,
         config_files=ConfigHelper.typical_config_files(),
     )
 
     worker = LoadBalancer(config)
-    
+
     try:
         # Запускаем созданный сервер
         await worker.start_serving()
-        
+
         # Ждем завершения
         await worker.wait_closed()
 
@@ -39,6 +40,7 @@ async def run_simple() -> None:
     finally:
         # await worker.shutdown()
         pass
+
 
 def main():
     """Главная функция для запуска HTTP воркера"""

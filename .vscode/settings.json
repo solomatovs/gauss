@@ -1,5 +1,18 @@
 {
-    "python.defaultInterpreterPath": "/usr/local/bin/python3",
-    "editor.formatOnSave": true,
-    "commentTranslate.targetLanguage": "ru",
+  "python.defaultInterpreterPath": "${workspaceFolder}/back/.venv/bin/python",
+  "python.analysis.extraPaths": ["${workspaceFolder}/back"],
+  "python.analysis.exclude": ["${workspaceFolder}/back/tmp"],
+  "python.analysis.autoImportCompletions": true,
+  "python.analysis.typeCheckingMode": "basic",
+  "editor.formatOnSave": true,
+  "commentTranslate.targetLanguage": "ru",
+
+  // включаем ruff
+  "ruff.enable": true,
+  "ruff.lint.enable": true,
+
+  // Автоисправление при сохранении
+  "editor.codeActionsOnSave": {
+    "source.fixAll.ruff": "always"
+  }
 }

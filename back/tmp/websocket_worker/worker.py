@@ -13,6 +13,7 @@ from server.websocket_worker.client.manager import ClientManager
 
 class WebsocketConfig(BaseSettings):
     """Конфигурация WebSocket воркера (неизменяемые настройки)"""
+
     addr: str = Field(default="localhost", description="Адрес для привязки сервера")
     port: int = Field(default=9000, description="Порт для биндинга", ge=1, le=65535)
     ping_interval: int = Field(default=20, description="Интервал ping в секундах", gt=0)
@@ -23,19 +24,23 @@ class WebsocketConfig(BaseSettings):
 class WebSocketWorker:
     """
     WebSocket сервер с правильным управлением жизненным циклом.
-    
+
     Ответственность:
     - Создание и управление WebSocket сервером
     - Координация между сервером и менеджером клиентов
     - Graceful shutdown при получении сигналов
     """
-    
-    def __init__(self, config: WebsocketConfig, server: websockets.Server, manager: ClientManager):
+
+    def __init__(
+        self, config: WebsocketConfig, server: websockets.Server, manager: ClientManager
+    ):
         self._config = config
         self._manager = manager
         self._server = server
         self._shutdown_event = asyncio.Event()
-        self._logger = LoggingHelper.getLogger(f"worker:{SocketHelper.sockets_addr(self._server.sockets)}")
+        self._logger = LoggingHelper.getLogger(
+            f"worker:{SocketHelper.sockets_addr(self._server.sockets)}"
+        )
 
     @classmethod
     @asynccontextmanager
@@ -46,12 +51,15 @@ class WebSocketWorker:
         """
         # создаем менеджер клиентских подключений
         manager = ClientManager()
+
         async def handle_client(websocket: ServerConnection):
             """Обработчик новых клиентских подключений"""
             await manager.process(websocket)
-        
+
         # создаем серверный слушающий socket согласно конфигурации
-        server_socket = SocketHelper.make_socket_with_reuse_port(config.addr, config.port)
+        server_socket = SocketHelper.make_socket_with_reuse_port(
+            config.addr, config.port
+        )
         # создаем websocket сервер и передаем ему socket
         server = await websockets.serve(
             handle_client,
@@ -64,7 +72,7 @@ class WebSocketWorker:
         )
 
         worker = cls(config, server, manager)
-        
+
         try:
             yield worker
         finally:
@@ -73,17 +81,17 @@ class WebSocketWorker:
     async def _cleanup(self):
         """Очистка всех ресурсов"""
         self._logger.info("cleaning up...")
-        
+
         # Закрываем прием новых соединений
         self._server.close()
-        
+
         # завершаем менеджер клиентов и соответственно все клиентские подключения
         self._manager.shutdown_signal()
         await self._manager.shutdown_wait()
-        
+
         # ждем завершения сервера
         await self._server.wait_closed()
-        
+
         self._logger.info("cleanup completed")
 
     async def run(self):
@@ -91,12 +99,16 @@ class WebSocketWorker:
         Этот метод блокирующий - завершается только при shutdown.
         """
         self._logger.info("starting...")
-        
+
         # Настраиваем обработчики сигналов
         loop = asyncio.get_running_loop()
-        loop.add_signal_handler(signal.SIGINT, lambda: asyncio.create_task(self.shutdown_signal()))
-        loop.add_signal_handler(signal.SIGTERM, lambda: asyncio.create_task(self.shutdown_signal()))
-        
+        loop.add_signal_handler(
+            signal.SIGINT, lambda: asyncio.create_task(self.shutdown_signal())
+        )
+        loop.add_signal_handler(
+            signal.SIGTERM, lambda: asyncio.create_task(self.shutdown_signal())
+        )
+
         try:
             await self._server.start_serving()
             self._logger.info("started")

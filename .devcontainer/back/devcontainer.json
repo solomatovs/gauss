@@ -6,14 +6,18 @@
   "mounts": [
     "source=${localWorkspaceFolder}/.git,target=${containerWorkspaceFolder}/.git,type=bind",
     "source=${localWorkspaceFolder}/.gitignore,target=${containerWorkspaceFolder}/.gitignore,type=bind",
-    "source=${localWorkspaceFolder}/back,target=${containerWorkspaceFolder}/back,type=bind",
-    "source=${localWorkspaceFolder}/front,target=${containerWorkspaceFolder}/front,type=bind",
     "source=${localWorkspaceFolder}/.vscode,target=${containerWorkspaceFolder}/.vscode,type=bind",
-    "source=${localWorkspaceFolder}/.devcontainer,target=${containerWorkspaceFolder}/.devcontainer,type=bind"
+    "source=${localWorkspaceFolder}/.devcontainer,target=${containerWorkspaceFolder}/.devcontainer,type=bind",
+    "source=${localWorkspaceFolder}/back,target=${containerWorkspaceFolder}/back,type=bind",
+    "source=${localWorkspaceFolder}/front,target=${containerWorkspaceFolder}/front,type=bind"
   ],
   "postCreateCommand": "export DEBIAN_FRONTEND=noninteractive && apt update && apt -y install net-tools dnsutils telnet lsof make && cd ${containerWorkspaceFolder}/back && make setup",
   "waitFor": "postCreateCommand",
   "shutdownAction": "stopContainer",
+
+  "containerEnv": {
+    "PATHONPATH": "${containerWorkspaceFolder}/back"
+  },
 
   "runArgs": ["--network", "gauss", "--name", "back"],
   "forwardPorts": [8000],
