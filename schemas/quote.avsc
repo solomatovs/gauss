@@ -1,0 +1,11 @@
+{
+  "type": "record",
+  "name": "Quote",
+  "namespace": "market",
+  "fields": [
+    {"name": "symbol", "type": "string"},
+    {"name": "bid", "type": "double"},
+    {"name": "ask", "type": "double"},
+    {"name": "ts_ms", "type": "long"}
+  ]
+}

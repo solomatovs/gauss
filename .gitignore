@@ -1,28 +1,24 @@
-# Logs
-logs
-*.log
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-pnpm-debug.log*
-lerna-debug.log*
+# Rust
+target/
+Cargo.lock
 
-# front
-node_modules
-dist
-dist-ssr
-*.local
-.pnpm-store
+# Data
+data/
 
-# back
-.venv/
-build/
-__pycache__/
-black/.venv/
-black/dist/
-*.egg-info/
-poetry.lock
+# IDE
+.idea/
+.codemap/
+*.swp
+*.swo
+*~
 
-# Editor directories and files
-!.vscode/extensions.json
+# OS
 .DS_Store
+Thumbs.db
+
+# Environment
+.env
+.env.*
+
+# Generated
+*.dot

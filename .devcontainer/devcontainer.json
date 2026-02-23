@@ -1,0 +1,36 @@
+{
+  "name": "Gauss (Rust)",
+  "build": {
+    "dockerfile": "Dockerfile"
+  },
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "rust-lang.rust-analyzer",
+        "tamasfe.even-better-toml",
+        "vadimcn.vscode-lldb",
+        "serayuzgur.crates",
+        "anthropic.claude-code",
+        "1YiB.rust-bundle",
+        "dustypomerleau.rust-syntax",
+        "JScearcy.rust-doc-viewer",
+        "What42Pizza.what42s-rust-theme-light",
+        "jinxdash.prettier-rust",
+        "tintinweb.graphviz-interactive-preview"
+      ],
+      "settings": {
+        "rust-analyzer.check.command": "clippy",
+        "rust-analyzer.cargo.allTargets": true,
+        "editor.formatOnSave": true,
+        "[rust]": {
+          "editor.defaultFormatter": "rust-lang.rust-analyzer"
+        }
+      }
+    }
+  },
+  "mounts": [
+    "type=volume,source=claude-code-data,target=/root/.claude"
+  ],
+  // "postCreateCommand": "",
+  "remoteUser": "root"
+}

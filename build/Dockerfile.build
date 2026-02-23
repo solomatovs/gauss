@@ -1,0 +1,74 @@
+# syntax=docker/dockerfile:1
+
+# Stage 1: Build workspace (binaries + plugin .so files)
+FROM rust:1.88-alpine AS builder
+RUN apk add --no-cache musl-dev
+
+# Dynamic linking для поддержки cdylib + dlopen
+ENV RUSTFLAGS="-C target-feature=-crt-static"
+
+WORKDIR /app
+
+# Копируем всё (кэш зависимостей хранится в cache mount, не в слоях)
+COPY Cargo.toml Cargo.lock ./
+COPY libs/api/ libs/api/
+COPY libs/plugin-host/ libs/plugin-host/
+COPY libs/topic-engine/ libs/topic-engine/
+COPY libs/pipeline/ libs/pipeline/
+COPY libs/topic-api-server/ libs/topic-api-server/
+COPY plugins/storage/file/ plugins/storage/file/
+COPY plugins/storage/raw-file/ plugins/storage/raw-file/
+COPY plugins/storage/clickhouse/ plugins/storage/clickhouse/
+COPY plugins/transport/tcp-server/ plugins/transport/tcp-server/
+COPY plugins/transport/tcp-client/ plugins/transport/tcp-client/
+COPY plugins/framing/lines/ plugins/framing/lines/
+COPY plugins/framing/length-prefixed/ plugins/framing/length-prefixed/
+COPY plugins/format/json/ plugins/format/json/
+COPY plugins/format/csv/ plugins/format/csv/
+COPY plugins/format/protobuf/ plugins/format/protobuf/
+COPY plugins/format/avro/ plugins/format/avro/
+COPY plugins/stage/symbol-filter/ plugins/stage/symbol-filter/
+COPY plugins/stage/ohlc/ plugins/stage/ohlc/
+COPY bins/server/ bins/server/
+COPY bins/quotes-gen/ bins/quotes-gen/
+# Stub for grafana-datasource (built separately, but needed for workspace resolution)
+COPY bins/grafana-datasource/Cargo.toml bins/grafana-datasource/Cargo.toml
+RUN mkdir -p bins/grafana-datasource/src && echo 'fn main() {}' > bins/grafana-datasource/src/main.rs
+
+# Build с persistent cache для cargo registry и target/
+RUN --mount=type=cache,target=/app/target \
+    --mount=type=cache,target=/usr/local/cargo/registry \
+    cargo build --release --workspace --exclude gpx-quotes && \
+    mkdir -p /out/plugins && \
+    cp target/release/gauss-server /out/gauss-server-linux-amd64 && \
+    cp target/release/quotes-gen /out/quotes-gen-linux-amd64 && \
+    cp target/release/libstorage_file.so /out/plugins/ && \
+    cp target/release/libstorage_raw_file.so /out/plugins/ && \
+    cp target/release/libstorage_clickhouse.so /out/plugins/ && \
+    cp target/release/libtransport_tcp_server.so /out/plugins/ && \
+    cp target/release/libtransport_tcp_client.so /out/plugins/ && \
+    cp target/release/libframing_lines.so /out/plugins/ && \
+    cp target/release/libframing_length_prefixed.so /out/plugins/ && \
+    cp target/release/libcodec_json.so /out/plugins/ && \
+    cp target/release/libcodec_csv.so /out/plugins/ && \
+    cp target/release/libcodec_protobuf.so /out/plugins/ && \
+    cp target/release/libcodec_avro.so /out/plugins/ && \
+    cp target/release/libstage_ohlc.so /out/plugins/ && \
+    cp target/release/libstage_symbol_filter.so /out/plugins/
+
+# Stage 2: Minimal runtime image (без внешних зависимостей)
+FROM alpine:3.22
+WORKDIR /app
+
+# Bundled libgcc_s (needed for dynamic linking, copied from builder)
+COPY --from=builder /usr/lib/libgcc_s.so.1 /usr/lib/libgcc_s.so.1
+
+# Binaries
+COPY --from=builder /out/gauss-server-linux-amd64 ./gauss-server-linux-amd64
+COPY --from=builder /out/quotes-gen-linux-amd64 ./quotes-gen-linux-amd64
+
+# Plugin .so files
+COPY --from=builder /out/plugins/ ./plugins/
+
+# Default config
+COPY config.toml ./config.toml

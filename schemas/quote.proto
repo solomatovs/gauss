@@ -1,0 +1,9 @@
+syntax = "proto3";
+package market;
+
+message Quote {
+  string symbol = 1 [json_name = "symbol"];
+  double bid = 2 [json_name = "bid"];
+  double ask = 3 [json_name = "ask"];
+  int64 ts_ms = 4 [json_name = "ts_ms"];
+}

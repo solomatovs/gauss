@@ -1,0 +1,32 @@
+[workspace]
+members = [
+    "libs/api",
+    "libs/plugin-host",
+    "libs/topic-engine",
+    "libs/pipeline",
+    "libs/topic-api-server",
+    "plugins/storage/file",
+    "plugins/storage/raw-file",
+    "plugins/storage/clickhouse",
+    "plugins/transport/tcp-server",
+    "plugins/transport/tcp-client",
+    "plugins/framing/lines",
+    "plugins/framing/length-prefixed",
+    "plugins/format/json",
+    "plugins/format/csv",
+    "plugins/format/protobuf",
+    "plugins/format/avro",
+    "plugins/middleware/compress",
+    "plugins/stage/symbol-filter",
+    "plugins/stage/ohlc",
+    "bins/server",
+    "bins/quotes-gen",
+    "bins/grafana-datasource",
+]
+resolver = "3"
+
+[profile.release]
+strip = true
+lto = "thin"
+opt-level = "z"
+panic = "abort"
