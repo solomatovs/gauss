@@ -41,12 +41,12 @@ impl Middleware for CompressMiddleware {
                 let mut decompressed = Vec::new();
                 decoder
                     .read_to_end(&mut decompressed)
-                    .map_err(|e| PluginError::new(format!("gzip decompress: {e}")))?;
+                    .map_err(|e| PluginError::io(format!("gzip decompress: {e}")))?;
                 Ok(decompressed)
             }
             Algorithm::Lz4 => {
                 lz4_flex::decompress_size_prepended(&data)
-                    .map_err(|e| PluginError::new(format!("lz4 decompress: {e}")))
+                    .map_err(|e| PluginError::io(format!("lz4 decompress: {e}")))
             }
         }
     }
@@ -58,7 +58,7 @@ impl Middleware for CompressMiddleware {
                 let mut compressed = Vec::new();
                 encoder
                     .read_to_end(&mut compressed)
-                    .map_err(|e| PluginError::new(format!("gzip compress: {e}")))?;
+                    .map_err(|e| PluginError::io(format!("gzip compress: {e}")))?;
                 Ok(compressed)
             }
             Algorithm::Lz4 => {

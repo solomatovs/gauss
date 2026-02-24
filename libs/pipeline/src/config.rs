@@ -29,7 +29,6 @@ pub struct TopicConfig {
     /// Имя topic'а (e.g., "quotes.raw", "ohlc.1m").
     pub name: String,
     /// Storage backend: "memory" (built-in) или путь к .so плагину.
-    #[serde(default = "default_topic_storage")]
     pub storage: String,
     /// Конфигурация storage плагина.
     #[serde(default)]
@@ -44,9 +43,6 @@ pub struct TopicConfig {
     pub overflow: OverflowPolicy,
 }
 
-fn default_topic_storage() -> String {
-    "memory".into()
-}
 fn default_topic_buffer() -> usize {
     4096
 }
@@ -144,30 +140,30 @@ impl SourceConfig {
     }
 
     /// Validate: либо plugin, либо pipeline, не оба.
-    pub fn validate(&self) -> Result<(), String> {
+    pub fn validate(&self) -> Result<(), crate::PipelineError> {
         let has_plugin = self.plugin.is_some();
         let has_pipeline = self.transport.is_some()
             || self.framing.is_some()
             || self.codec.is_some();
 
         if has_plugin && has_pipeline {
-            return Err(format!(
+            return Err(crate::PipelineError::Validation(format!(
                 "source [{}]: cannot specify both 'plugin' and 'transport/framing/codec'",
                 self.name
-            ));
+            )));
         }
         if !has_plugin && !has_pipeline {
-            return Err(format!(
+            return Err(crate::PipelineError::Validation(format!(
                 "source [{}]: must specify either 'plugin' or 'transport + framing + codec'",
                 self.name
-            ));
+            )));
         }
         if has_pipeline
             && (self.framing.is_none() || self.codec.is_none()) {
-                return Err(format!(
+                return Err(crate::PipelineError::Validation(format!(
                     "source [{}]: pipeline mode requires all of: transport, framing, codec",
                     self.name
-                ));
+                )));
             }
         Ok(())
     }
@@ -263,30 +259,30 @@ impl SinkConfig {
     }
 
     /// Validate: либо plugin, либо pipeline, не оба.
-    pub fn validate(&self) -> Result<(), String> {
+    pub fn validate(&self) -> Result<(), crate::PipelineError> {
         let has_plugin = self.plugin.is_some();
         let has_pipeline = self.transport.is_some()
             || self.framing.is_some()
             || self.codec.is_some();
 
         if has_plugin && has_pipeline {
-            return Err(format!(
+            return Err(crate::PipelineError::Validation(format!(
                 "sink [{}]: cannot specify both 'plugin' and 'transport/framing/codec'",
                 self.name
-            ));
+            )));
         }
         if !has_plugin && !has_pipeline {
-            return Err(format!(
+            return Err(crate::PipelineError::Validation(format!(
                 "sink [{}]: must specify either 'plugin' or 'transport + framing + codec'",
                 self.name
-            ));
+            )));
         }
         if has_pipeline
             && (self.framing.is_none() || self.codec.is_none()) {
-                return Err(format!(
+                return Err(crate::PipelineError::Validation(format!(
                     "sink [{}]: pipeline mode requires all of: transport, framing, codec",
                     self.name
-                ));
+                )));
             }
         Ok(())
     }

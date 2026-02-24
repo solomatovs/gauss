@@ -63,8 +63,8 @@ fn default_ws_overflow() -> OverflowPolicy {
 impl ServerConfig {
     pub fn load(path: &str) -> Result<Self, crate::error::ServerError> {
         let content = std::fs::read_to_string(path)
-            .map_err(|e| crate::error::ServerError::Config(format!("read config '{path}': {e}")))?;
+            .map_err(|e| crate::error::ServerError::Config { context: "read", detail: format!("'{path}': {e}") })?;
         toml::from_str(&content)
-            .map_err(|e| crate::error::ServerError::Config(format!("parse config '{path}': {e}")))
+            .map_err(|e| crate::error::ServerError::Config { context: "parse", detail: format!("'{path}': {e}") })
     }
 }

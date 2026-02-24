@@ -1,7 +1,7 @@
 #[derive(Debug, thiserror::Error)]
 pub enum ServerError {
-    #[error("config: {0}")]
-    Config(String),
+    #[error("config ({context}): {detail}")]
+    Config { context: &'static str, detail: String },
 
     #[error("no {0} configured")]
     NoComponents(&'static str),

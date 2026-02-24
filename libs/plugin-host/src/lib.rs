@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -6,9 +7,10 @@ use libloading::{Library, Symbol};
 
 use server_api::{
     AbiVersionFn, CreatePluginFn, DataFormat, PluginCreateResult, PluginError,
-    QS_ABI_VERSION, RecordData, TopicRecord, TopicQuery,
+    QS_ABI_VERSION, RecordSchema, TopicRecord, TopicQuery,
     Codec, FormatSerializer, Framing, Middleware, TransportStream,
-    Transport, TopicStorage, TopicProcessor, TopicSink, TopicSource, ProcessContext,
+    Transport, TopicStorage, TopicProcessor, TopicSink, TopicSource,
+    TopicPublisher, TopicInspector, TopicContext, StorageFactory,
 };
 
 // ════════════════════════════════════════════════════════════════
@@ -134,9 +136,9 @@ define_plugin_wrapper!(PluginFormatSerializer, FormatSerializer, b"qs_create_for
 // ════════════════════════════════════════════════════════════════
 
 impl TopicStorage for PluginTopicStorage {
-    fn init(&self) -> Pin<Box<dyn Future<Output = Result<(), PluginError>> + Send + '_>> {
+    fn init(&self, schema: Option<RecordSchema>) -> Pin<Box<dyn Future<Output = Result<(), PluginError>> + Send + '_>> {
         match self.get() {
-            Ok(inner) => inner.init(),
+            Ok(inner) => inner.init(schema),
             Err(e) => Box::pin(async move { Err(e) }),
         }
     }
@@ -166,7 +168,7 @@ impl TopicStorage for PluginTopicStorage {
 impl TopicProcessor for PluginTopicProcessor {
     fn process<'a>(
         &'a self,
-        ctx: &'a dyn ProcessContext,
+        ctx: TopicContext<'a>,
         source_topic: &'a str,
         record: &'a TopicRecord,
     ) -> Pin<Box<dyn Future<Output = Result<(), PluginError>> + Send + 'a>> {
@@ -178,7 +180,7 @@ impl TopicProcessor for PluginTopicProcessor {
 }
 
 impl TopicSink for PluginTopicSink {
-    fn init(&self, ctx: Arc<dyn ProcessContext>) -> Pin<Box<dyn Future<Output = Result<(), PluginError>> + Send + '_>> {
+    fn init(&self, ctx: Arc<dyn TopicInspector>) -> Pin<Box<dyn Future<Output = Result<(), PluginError>> + Send + '_>> {
         match self.get() {
             Ok(inner) => inner.init(ctx),
             Err(e) => Box::pin(async move { Err(e) }),
@@ -203,7 +205,7 @@ impl TopicSink for PluginTopicSink {
 impl TopicSource for PluginTopicSource {
     fn start(
         &self,
-        ctx: Arc<dyn ProcessContext>,
+        ctx: Arc<dyn TopicPublisher>,
         target_topic: &str,
     ) -> Pin<Box<dyn Future<Output = Result<(), PluginError>> + Send + '_>> {
         match self.get() {
@@ -245,12 +247,16 @@ impl Framing for PluginFraming {
 }
 
 impl Codec for PluginCodec {
-    fn decode(&self, data: &[u8]) -> Result<(serde_json::Value, RecordData), PluginError> {
+    fn decode(&self, data: &[u8]) -> Result<serde_json::Value, PluginError> {
         self.get()?.decode(data)
     }
 
-    fn encode(&self, data: &RecordData) -> Result<Vec<u8>, PluginError> {
-        self.get()?.encode(data)
+    fn encode(&self, value: &serde_json::Value) -> Result<Vec<u8>, PluginError> {
+        self.get()?.encode(value)
+    }
+
+    fn data_format(&self) -> DataFormat {
+        self.get().map(|inner| inner.data_format()).unwrap_or(DataFormat::Raw)
     }
 }
 
@@ -275,5 +281,41 @@ impl FormatSerializer for PluginFormatSerializer {
 
     fn format(&self) -> DataFormat {
         self.get().map(|inner| inner.format()).unwrap_or(DataFormat::Raw)
+    }
+
+    fn schema(&self) -> Option<RecordSchema> {
+        self.get().ok()?.schema()
+    }
+}
+
+// ════════════════════════════════════════════════════════════════
+//  StorageRegistry
+// ════════════════════════════════════════════════════════════════
+
+/// Единый резолвер storage: built-in фабрики + fallback на FFI-плагины.
+pub struct StorageRegistry {
+    factories: HashMap<String, Box<dyn StorageFactory>>,
+}
+
+impl StorageRegistry {
+    pub fn new() -> Self {
+        Self { factories: HashMap::new() }
+    }
+
+    /// Зарегистрировать built-in storage фабрику по имени.
+    pub fn register(&mut self, name: impl Into<String>, factory: Box<dyn StorageFactory>) {
+        self.factories.insert(name.into(), factory);
+    }
+
+    /// Создать storage по имени + JSON-конфигу.
+    /// Если имя зарегистрировано — использует фабрику.
+    /// Иначе — загружает FFI-плагин по пути.
+    pub fn create(&self, name: &str, config_json: &str) -> Result<Arc<dyn TopicStorage>, PluginError> {
+        if let Some(factory) = self.factories.get(name) {
+            factory.create(config_json)
+        } else {
+            let storage = PluginTopicStorage::load(name, config_json)?;
+            Ok(Arc::new(storage))
+        }
     }
 }

@@ -1,14 +1,10 @@
 [package]
-name = "storage-clickhouse"
+name = "storage-memory"
 version = "0.1.0"
 edition = "2024"
 
-[lib]
-crate-type = ["cdylib"]
-
 [dependencies]
 server-api = { path = "../../../libs/api" }
+tokio = { version = "1", features = ["sync"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
-base64 = "0.22"

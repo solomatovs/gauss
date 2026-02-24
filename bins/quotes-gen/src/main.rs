@@ -1,7 +1,7 @@
 mod cmd;
 
 use clap::Parser;
-use cmd::generate::{Effective, GenArgs};
+use cmd::config::{Effective, GenArgs};
 
 #[derive(Parser)]
 #[command(name = "quotes-gen", about = "Генератор котировок (plugin-based)")]

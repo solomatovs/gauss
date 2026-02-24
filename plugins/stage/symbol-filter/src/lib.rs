@@ -3,7 +3,7 @@ use std::pin::Pin;
 
 use server_api::{
     parse_plugin_config_opt, plugin_err, plugin_ok,
-    ProcessContext, TopicRecord, TopicProcessor, PluginCreateResult,
+    TopicContext, TopicRecord, TopicProcessor, PluginCreateResult,
     PluginError,
 };
 use serde::Deserialize;
@@ -27,7 +27,7 @@ struct SymbolFilter {
 impl TopicProcessor for SymbolFilter {
     fn process<'a>(
         &'a self,
-        ctx: &'a dyn ProcessContext,
+        ctx: TopicContext<'a>,
         _source_topic: &'a str,
         record: &'a TopicRecord,
     ) -> Pin<Box<dyn Future<Output = Result<(), PluginError>> + Send + 'a>> {
@@ -39,7 +39,7 @@ impl TopicProcessor for SymbolFilter {
 
             // Если есть target_topic — переиздать запись
             if let Some(ref topic) = self.target_topic {
-                ctx.publish(topic, record.clone()).await?;
+                ctx.publisher.publish(topic, record.clone()).await?;
             }
 
             Ok(())

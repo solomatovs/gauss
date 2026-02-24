@@ -7,6 +7,7 @@ edition = "2024"
 server-api = { path = "../../libs/api" }
 plugin-host = { path = "../../libs/plugin-host" }
 topic-engine = { path = "../../libs/topic-engine" }
+storage-memory = { path = "../../plugins/storage/memory" }
 pipeline = { path = "../../libs/pipeline" }
 topic-api-server = { path = "../../libs/topic-api-server" }
 clap = { version = "4", features = ["derive", "env"] }

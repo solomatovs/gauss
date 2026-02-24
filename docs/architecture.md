@@ -79,7 +79,6 @@
                      │   Codec             │
                      │   FormatSerializer  │
                      │   Middleware        │
-                     │   ProcessContext    │
                      │                     │
                      │ FFI:                │
                      │   PluginCreateResult│

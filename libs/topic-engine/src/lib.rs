@@ -1,6 +1,6 @@
 pub mod error;
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -8,8 +8,10 @@ use std::sync::Arc;
 use tokio::sync::{mpsc, RwLock};
 
 use server_api::{
-    FormatSerializer, OverflowPolicy, PluginError, ProcessContext, RecordData, TopicQuery,
+    OverflowPolicy, PluginError, TopicQuery,
     TopicRecord, TopicStorage, TopicSubscription,
+    TopicPublisher, TopicSubscriber, TopicCodec, TopicInspector,
+    now_ms,
 };
 
 pub use error::TopicError;
@@ -49,20 +51,17 @@ pub struct Topic {
     pub name: String,
     storage: Arc<dyn TopicStorage>,
     subscribers: RwLock<Vec<Subscriber>>,
-    format: Arc<dyn FormatSerializer>,
 }
 
 impl Topic {
     pub fn new(
         name: String,
         storage: Arc<dyn TopicStorage>,
-        format: Arc<dyn FormatSerializer>,
     ) -> Self {
         Self {
             name,
             storage,
             subscribers: RwLock::new(Vec::new()),
-            format,
         }
     }
 
@@ -136,7 +135,8 @@ impl Topic {
 //  TopicRegistry
 // ═══════════════════════════════════════════════════════════════
 
-/// Реестр всех topic'ов. Реализует ProcessContext для processor'ов и sink'ов.
+/// Реестр всех topic'ов. Реализует TopicPublisher, TopicSubscriber,
+/// TopicCodec и TopicInspector.
 pub struct TopicRegistry {
     topics: HashMap<String, Arc<Topic>>,
 }
@@ -160,7 +160,63 @@ impl TopicRegistry {
     }
 }
 
-impl ProcessContext for TopicRegistry {
+impl TopicPublisher for TopicRegistry {
+    fn publish(
+        &self,
+        topic: &str,
+        record: TopicRecord,
+    ) -> Pin<Box<dyn Future<Output = Result<(), PluginError>> + Send + '_>> {
+        let topic_arc = self.topics.get(topic).cloned();
+        let topic_name = topic.to_string();
+        Box::pin(async move {
+            match topic_arc {
+                Some(t) => t.publish(record).await.map_err(TopicError::into_plugin_error),
+                None => Err(TopicError::NotFound(topic_name).into_plugin_error()),
+            }
+        })
+    }
+}
+
+impl TopicSubscriber for TopicRegistry {
+    fn subscribe(
+        &self,
+        topic: &str,
+        buffer: usize,
+        overflow: OverflowPolicy,
+    ) -> Pin<Box<dyn Future<Output = Result<Box<dyn TopicSubscription>, PluginError>> + Send + '_>> {
+        let topic_arc = self.topics.get(topic).cloned();
+        let topic_name = topic.to_string();
+        Box::pin(async move {
+            let t = topic_arc
+                .ok_or_else(|| TopicError::NotFound(topic_name).into_plugin_error())?;
+            let sub = t.subscribe(buffer, overflow).await;
+            Ok(Box::new(sub) as Box<dyn TopicSubscription>)
+        })
+    }
+}
+
+impl TopicCodec for TopicRegistry {
+    fn deserialize_data(&self, _topic: &str, record: &TopicRecord)
+        -> Result<serde_json::Value, PluginError>
+    {
+        // Value уже в record — тривиально
+        Ok(record.value.clone())
+    }
+
+    fn serialize_data(&self, _topic: &str, value: &serde_json::Value)
+        -> Result<TopicRecord, PluginError>
+    {
+        // Создаём record с value, без raw (не было ingestion)
+        Ok(TopicRecord {
+            ts_ms: now_ms(),
+            key: String::new(),
+            value: value.clone(),
+            raw: None,
+        })
+    }
+}
+
+impl TopicInspector for TopicRegistry {
     fn query(
         &self,
         topic: &str,
@@ -177,35 +233,8 @@ impl ProcessContext for TopicRegistry {
         })
     }
 
-    fn publish(
-        &self,
-        topic: &str,
-        record: TopicRecord,
-    ) -> Pin<Box<dyn Future<Output = Result<(), PluginError>> + Send + '_>> {
-        let topic_arc = self.topics.get(topic).cloned();
-        let topic_name = topic.to_string();
-        Box::pin(async move {
-            match topic_arc {
-                Some(t) => t.publish(record).await.map_err(TopicError::into_plugin_error),
-                None => Err(TopicError::NotFound(topic_name).into_plugin_error()),
-            }
-        })
-    }
-
-    fn subscribe(
-        &self,
-        topic: &str,
-        buffer: usize,
-        overflow: OverflowPolicy,
-    ) -> Pin<Box<dyn Future<Output = Result<Box<dyn TopicSubscription>, PluginError>> + Send + '_>> {
-        let topic_arc = self.topics.get(topic).cloned();
-        let topic_name = topic.to_string();
-        Box::pin(async move {
-            let t = topic_arc
-                .ok_or_else(|| TopicError::NotFound(topic_name).into_plugin_error())?;
-            let sub = t.subscribe(buffer, overflow).await;
-            Ok(Box::new(sub) as Box<dyn TopicSubscription>)
-        })
+    fn topics(&self) -> Vec<String> {
+        self.topics.keys().cloned().collect()
     }
 
     fn flush_topic(
@@ -221,112 +250,5 @@ impl ProcessContext for TopicRegistry {
             }
         })
     }
-
-    fn topics(&self) -> Vec<String> {
-        self.topics.keys().cloned().collect()
-    }
-
-    fn deserialize_data(&self, topic: &str, data: &RecordData)
-        -> Result<serde_json::Value, PluginError>
-    {
-        let t = self.topics.get(topic)
-            .ok_or_else(|| TopicError::NotFound(topic.to_string()).into_plugin_error())?;
-        t.format.deserialize(data.as_bytes())
-    }
-
-    fn serialize_data(&self, topic: &str, value: &serde_json::Value)
-        -> Result<RecordData, PluginError>
-    {
-        let t = self.topics.get(topic)
-            .ok_or_else(|| TopicError::NotFound(topic.to_string()).into_plugin_error())?;
-        let bytes = t.format.serialize(value)?;
-        Ok(RecordData::new(bytes, t.format.format()))
-    }
 }
 
-// ═══════════════════════════════════════════════════════════════
-//  MemoryStorage
-// ═══════════════════════════════════════════════════════════════
-
-/// In-memory ring-buffer storage. Для topic'ов, не требующих
-/// дисковой persistence (e.g., "quotes.raw" для real-time).
-pub struct MemoryStorage {
-    records: RwLock<VecDeque<TopicRecord>>,
-    max_records: usize,
-}
-
-impl MemoryStorage {
-    pub fn new(max_records: usize) -> Self {
-        Self {
-            records: RwLock::new(VecDeque::with_capacity(max_records.min(65536))),
-            max_records,
-        }
-    }
-}
-
-impl TopicStorage for MemoryStorage {
-    fn init(&self) -> Pin<Box<dyn Future<Output = Result<(), PluginError>> + Send + '_>> {
-        Box::pin(async { Ok(()) })
-    }
-
-    fn save(
-        &self,
-        records: &[TopicRecord],
-    ) -> Pin<Box<dyn Future<Output = Result<(), PluginError>> + Send + '_>> {
-        let records = records.to_vec();
-        Box::pin(async move {
-            let mut buf = self.records.write().await;
-            for record in records {
-                if buf.len() >= self.max_records {
-                    buf.pop_front();
-                }
-                buf.push_back(record);
-            }
-            Ok(())
-        })
-    }
-
-    fn query(
-        &self,
-        query: &TopicQuery,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<TopicRecord>, PluginError>> + Send + '_>> {
-        let query = query.clone();
-        Box::pin(async move {
-            let buf = self.records.read().await;
-            let mut result: Vec<TopicRecord> = buf
-                .iter()
-                .filter(|r| {
-                    if let Some(ref key) = query.key {
-                        if r.key != *key {
-                            return false;
-                        }
-                    }
-                    if let Some(from) = query.from_ms {
-                        if r.ts_ms < from {
-                            return false;
-                        }
-                    }
-                    if let Some(to) = query.to_ms {
-                        if r.ts_ms >= to {
-                            return false;
-                        }
-                    }
-                    true
-                })
-                .cloned()
-                .collect();
-
-            if let Some(limit) = query.limit {
-                if result.len() > limit {
-                    result = result.split_off(result.len() - limit);
-                }
-            }
-
-            Ok(result)
-        })
-    }
-
-    fn flush(&self) -> Pin<Box<dyn Future<Output = Result<(), PluginError>> + Send + '_>> {
-        Box::pin(async { Ok(()) })
-    }
-}

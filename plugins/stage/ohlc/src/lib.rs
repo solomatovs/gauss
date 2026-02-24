@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use server_api::{
     parse_plugin_config_opt, plugin_err, plugin_ok,
-    ProcessContext, TopicRecord, TopicProcessor,
+    TopicContext, TopicRecord, TopicProcessor,
     PluginCreateResult, now_ms, PluginError,
 };
 
@@ -177,7 +177,7 @@ impl OhlcEngine {
 // ═══════════════════════════════════════════════════════════════
 
 /// TopicProcessor: получает котировки из trigger'а, вычисляет OHLC свечи,
-/// публикует обновлённые свечи в topic'и ohlc.{tf} через ProcessContext.
+/// публикует обновлённые свечи в topic'и ohlc.{tf} через TopicPublisher.
 struct OhlcProcessor {
     engine: Mutex<OhlcEngine>,
 }
@@ -193,13 +193,13 @@ impl OhlcProcessor {
 impl TopicProcessor for OhlcProcessor {
     fn process<'a>(
         &'a self,
-        ctx: &'a dyn ProcessContext,
+        ctx: TopicContext<'a>,
         source_topic: &'a str,
         record: &'a TopicRecord,
     ) -> Pin<Box<dyn Future<Output = Result<(), PluginError>> + Send + 'a>> {
         Box::pin(async move {
-            // Десериализуем через формат SOURCE topic'а
-            let json_value = ctx.deserialize_data(source_topic, &record.data)?;
+            // Value уже в record — десериализация тривиальна
+            let json_value = ctx.codec.deserialize_data(source_topic, record)?;
             let quote: Quote = serde_json::from_value(json_value)
                 .map_err(|e| PluginError::format_err(format!("OHLC: failed to parse Quote from record: {e}")))?;
             let candles = self.engine.lock().await.process_tick(&quote);
@@ -209,14 +209,14 @@ impl TopicProcessor for OhlcProcessor {
                 let candle_value = serde_json::to_value(&candle)
                     .map_err(|e| PluginError::format_err(format!("OHLC: failed to serialize Candle: {e}")))?;
 
-                // Сериализуем через формат TARGET topic'а
-                let data = ctx.serialize_data(&topic, &candle_value)?;
+                // serialize_data теперь возвращает TopicRecord
+                let candle_record = ctx.codec.serialize_data(&topic, &candle_value)?;
                 let candle_record = TopicRecord {
                     ts_ms: candle.ts_ms,
                     key: candle.symbol.clone(),
-                    data,
+                    ..candle_record
                 };
-                ctx.publish(&topic, candle_record).await?;
+                ctx.publisher.publish(&topic, candle_record).await?;
             }
 
             Ok(())

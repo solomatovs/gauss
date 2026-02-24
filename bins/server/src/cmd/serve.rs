@@ -10,46 +10,36 @@ use pipeline::{Endpoint, spawn_source, spawn_source_plugin_task, spawn_processor
 use pipeline::config::config_json_or_empty;
 use plugin_host::{
     PluginFormatSerializer, PluginTopicProcessor,
-    PluginTopicSink, PluginTopicSource, PluginTopicStorage,
+    PluginTopicSink, PluginTopicSource, StorageRegistry,
 };
-use topic_engine::{MemoryStorage, Topic, TopicRegistry};
-use server_api::{FormatSerializer, ProcessContext, TopicProcessor, TopicSource, TopicSink, TopicStorage};
+use storage_memory::MemoryStorageFactory;
+use topic_engine::{Topic, TopicRegistry};
+use server_api::{
+    FormatSerializer, TopicProcessor, TopicSource, TopicSink,
+    TopicPublisher, TopicSubscriber, TopicInspector, TopicCodec,
+};
 
-/// MemoryStorage config (для `storage = "memory"`).
-#[derive(Debug, serde::Deserialize)]
-struct MemoryStorageConfig {
-    #[serde(default = "default_max_records")]
-    max_records: usize,
+// ═══════════════════════════════════════════════════════════════
+//  App — bootstrapped server ready to run
+// ═══════════════════════════════════════════════════════════════
+
+struct App {
+    handles: Vec<JoinHandle<()>>,
+    plugin_sinks: Vec<Arc<dyn TopicSink>>,
+    inspector: Arc<dyn TopicInspector>,
+    api_port: u16,
+    ws_buffer: usize,
+    ws_overflow: server_api::OverflowPolicy,
+    subscriber: Arc<dyn TopicSubscriber>,
 }
 
-impl Default for MemoryStorageConfig {
-    fn default() -> Self {
-        Self {
-            max_records: default_max_records(),
-        }
-    }
-}
-
-fn default_max_records() -> usize {
-    100_000
-}
-
-pub async fn run(args: ServeArgs) -> Result<(), ServerError> {
-    tracing::info!("gauss-server starting");
-
-    // --- Load config ---
-    let config = ServerConfig::load(&args.config)?;
-    tracing::info!(config = %args.config, "loaded config");
-
-    // --- CancellationToken for graceful shutdown ---
-    let token = CancellationToken::new();
-
+/// Создать и сконфигурировать все компоненты.
+async fn bootstrap(config: ServerConfig, token: &CancellationToken) -> Result<App, ServerError> {
     // --- Load formats ---
     let mut formats: HashMap<String, Arc<dyn FormatSerializer>> = HashMap::new();
     for fmt_cfg in &config.formats {
         let config_json = config_json_or_empty(&fmt_cfg.config)?;
-        let fmt = PluginFormatSerializer::load(&fmt_cfg.plugin, &config_json)
-            ?;
+        let fmt = PluginFormatSerializer::load(&fmt_cfg.plugin, &config_json)?;
         tracing::info!(name = %fmt_cfg.name, plugin = %fmt_cfg.plugin, "loaded format");
         formats.insert(fmt_cfg.name.clone(), Arc::new(fmt));
     }
@@ -59,31 +49,20 @@ pub async fn run(args: ServeArgs) -> Result<(), ServerError> {
         return Err(ServerError::NoComponents("[[topics]]"));
     }
 
+    let mut storage_registry = StorageRegistry::new();
+    storage_registry.register("memory", Box::new(MemoryStorageFactory));
+
     let mut registry = TopicRegistry::new();
 
     for topic_cfg in &config.topics {
-        let storage: Arc<dyn TopicStorage> = if topic_cfg.storage == "memory" {
-            let mem_cfg: MemoryStorageConfig = match &topic_cfg.storage_config {
-                Some(v) => {
-                    let json = serde_json::to_string(v)
-                        .map_err(|e| ServerError::Config(format!("serialize memory config: {e}")))?;
-                    serde_json::from_str(&json)
-                        .map_err(|e| ServerError::Config(format!("parse memory config: {e}")))?
-                }
-                None => MemoryStorageConfig::default(),
-            };
-            Arc::new(MemoryStorage::new(mem_cfg.max_records))
-        } else {
-            let config_json = config_json_or_empty(&topic_cfg.storage_config)?;
-            let plugin_storage = PluginTopicStorage::load(&topic_cfg.storage, &config_json)
-                ?;
-            plugin_storage.init().await?;
-            Arc::new(plugin_storage)
-        };
-
         let fmt = formats.get(&topic_cfg.format)
             .ok_or_else(|| ServerError::FormatNotFound(topic_cfg.format.clone()))?;
-        let topic = Topic::new(topic_cfg.name.clone(), storage, fmt.clone());
+
+        let config_json = config_json_or_empty(&topic_cfg.storage_config)?;
+        let storage = storage_registry.create(&topic_cfg.storage, &config_json)?;
+        storage.init(fmt.schema()).await?;
+
+        let topic = Topic::new(topic_cfg.name.clone(), storage);
         registry.register(topic);
         tracing::info!(
             topic = %topic_cfg.name,
@@ -95,16 +74,19 @@ pub async fn run(args: ServeArgs) -> Result<(), ServerError> {
         );
     }
 
-    // Freeze registry → Arc<dyn ProcessContext>
-    let ctx: Arc<dyn ProcessContext> = Arc::new(registry);
+    // Freeze registry → typed Arc'ы для каждого суб-трейта
+    let registry = Arc::new(registry);
+    let publisher: Arc<dyn TopicPublisher> = registry.clone();
+    let subscriber: Arc<dyn TopicSubscriber> = registry.clone();
+    let codec: Arc<dyn TopicCodec> = registry.clone();
+    let inspector: Arc<dyn TopicInspector> = registry.clone();
 
     let mut handles: Vec<JoinHandle<()>> = Vec::new();
 
     // --- Spawn processors (all plugin-based) ---
     for (i, proc_cfg) in config.processors.iter().enumerate() {
         let config_json = config_json_or_empty(&proc_cfg.config)?;
-        let plugin_proc = PluginTopicProcessor::load(&proc_cfg.plugin, &config_json)
-            ?;
+        let plugin_proc = PluginTopicProcessor::load(&proc_cfg.plugin, &config_json)?;
         tracing::info!(
             index = i,
             plugin = %proc_cfg.plugin,
@@ -113,16 +95,17 @@ pub async fn run(args: ServeArgs) -> Result<(), ServerError> {
         );
         let processor: Arc<dyn TopicProcessor> = Arc::new(plugin_proc);
 
-        let subscription = ctx
+        let subscription = subscriber
             .subscribe(&proc_cfg.trigger, proc_cfg.buffer, proc_cfg.overflow)
-            .await
-            ?;
+            .await?;
 
         handles.push(spawn_processor_task(
             processor,
             proc_cfg.trigger.clone(),
             subscription,
-            ctx.clone(),
+            publisher.clone(),
+            codec.clone(),
+            inspector.clone(),
             token.clone(),
         ));
     }
@@ -131,7 +114,7 @@ pub async fn run(args: ServeArgs) -> Result<(), ServerError> {
     let mut plugin_sinks: Vec<Arc<dyn TopicSink>> = Vec::new();
 
     for sink_cfg in &config.sinks {
-        sink_cfg.validate().map_err(ServerError::Config)?;
+        sink_cfg.validate()?;
 
         if sink_cfg.is_pipeline() {
             // Pipeline sink: transport + framing + middleware + codec
@@ -148,7 +131,7 @@ pub async fn run(args: ServeArgs) -> Result<(), ServerError> {
             handles.push(spawn_pipeline_sink(
                 endpoint,
                 sink_cfg.topics.clone(),
-                &ctx,
+                &subscriber,
                 sink_cfg.buffer,
                 sink_cfg.overflow,
                 sink_cfg.conn_buffer,
@@ -166,9 +149,8 @@ pub async fn run(args: ServeArgs) -> Result<(), ServerError> {
             // Plugin sink (legacy monolithic)
             let plugin_path = sink_cfg.plugin.as_ref().unwrap();
             let config_json = config_json_or_empty(&sink_cfg.config)?;
-            let ps = PluginTopicSink::load(plugin_path, &config_json)
-                ?;
-            ps.init(ctx.clone()).await?;
+            let ps = PluginTopicSink::load(plugin_path, &config_json)?;
+            ps.init(inspector.clone()).await?;
 
             let arc_sink: Arc<dyn TopicSink> = Arc::new(ps);
             plugin_sinks.push(arc_sink.clone());
@@ -177,7 +159,7 @@ pub async fn run(args: ServeArgs) -> Result<(), ServerError> {
                 arc_sink,
                 sink_cfg.name.clone(),
                 sink_cfg.topics.clone(),
-                &ctx,
+                &subscriber,
                 sink_cfg.buffer,
                 sink_cfg.overflow,
                 token.clone(),
@@ -197,7 +179,7 @@ pub async fn run(args: ServeArgs) -> Result<(), ServerError> {
     }
 
     for source_cfg in &config.sources {
-        source_cfg.validate().map_err(ServerError::Config)?;
+        source_cfg.validate()?;
 
         if source_cfg.is_pipeline() {
             // Pipeline source: transport + framing + middleware + codec
@@ -216,7 +198,7 @@ pub async fn run(args: ServeArgs) -> Result<(), ServerError> {
             handles.push(spawn_source(
                 endpoint,
                 source_cfg.topic.clone(),
-                ctx.clone(),
+                publisher.clone(),
                 source_cfg.buffer,
                 source_cfg.overflow,
                 source_cfg.conn_buffer,
@@ -234,15 +216,14 @@ pub async fn run(args: ServeArgs) -> Result<(), ServerError> {
             // Plugin source (monolithic)
             let plugin_path = source_cfg.plugin.as_ref().unwrap();
             let config_json = config_json_or_empty(&source_cfg.config)?;
-            let ps = PluginTopicSource::load(plugin_path, &config_json)
-                ?;
+            let ps = PluginTopicSource::load(plugin_path, &config_json)?;
             let arc_source: Arc<dyn TopicSource> = Arc::new(ps);
 
             handles.push(spawn_source_plugin_task(
                 arc_source,
                 source_cfg.name.clone(),
                 source_cfg.topic.clone(),
-                ctx.clone(),
+                publisher.clone(),
                 token.clone(),
             ));
             tracing::info!(
@@ -254,61 +235,97 @@ pub async fn run(args: ServeArgs) -> Result<(), ServerError> {
         }
     }
 
-    // --- API server (HTTP + WS) ---
-    let api_ctx = ctx.clone();
-    let api_port = config.api_port;
-    let ws_buffer = config.ws_buffer;
-    let ws_overflow = config.ws_overflow;
-    let api_token = token.clone();
-    let api_handle = tokio::spawn(async move {
-        if let Err(e) = topic_api_server::run(api_port, api_ctx, ws_buffer, ws_overflow, api_token).await {
-            tracing::error!(error = %e, "api server error");
+    Ok(App {
+        handles,
+        plugin_sinks,
+        inspector,
+        api_port: config.api_port,
+        ws_buffer: config.ws_buffer,
+        ws_overflow: config.ws_overflow,
+        subscriber,
+    })
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  Lifecycle — run API + wait for shutdown + drain + flush
+// ═══════════════════════════════════════════════════════════════
+
+impl App {
+    async fn serve(self, token: CancellationToken) -> Result<(), ServerError> {
+        // --- API server (HTTP + WS) ---
+        let api_handle = tokio::spawn({
+            let inspector = self.inspector.clone();
+            let subscriber = self.subscriber.clone();
+            let api_token = token.clone();
+            let port = self.api_port;
+            let ws_buffer = self.ws_buffer;
+            let ws_overflow = self.ws_overflow;
+            async move {
+                if let Err(e) = topic_api_server::run(port, inspector, subscriber, ws_buffer, ws_overflow, api_token).await {
+                    tracing::error!(error = %e, "api server error");
+                }
+            }
+        });
+
+        tracing::info!(port = self.api_port, "api server (http+ws) listening");
+        tracing::info!("server ready");
+
+        // --- Ожидание Ctrl+C ---
+        tokio::signal::ctrl_c().await?;
+        tracing::info!("shutting down...");
+
+        // Signal all tasks to stop cooperatively
+        token.cancel();
+
+        // Drain: wait up to 5s for tasks to finish gracefully
+        tokio::time::sleep(Duration::from_secs(5)).await;
+
+        // Abort anything still running
+        for h in &self.handles {
+            if !h.is_finished() {
+                h.abort();
+            }
         }
-    });
-
-    tracing::info!(port = config.api_port, "api server (http+ws) listening");
-    tracing::info!("server ready");
-
-    // --- Ожидание Ctrl+C ---
-    tokio::signal::ctrl_c().await?;
-    tracing::info!("shutting down...");
-
-    // Signal all tasks to stop cooperatively
-    token.cancel();
-
-    // Drain: wait up to 5s for tasks to finish gracefully
-    tokio::time::sleep(Duration::from_secs(5)).await;
-
-    // Abort anything still running
-    for h in &handles {
-        if !h.is_finished() {
-            h.abort();
+        if !api_handle.is_finished() {
+            api_handle.abort();
         }
-    }
-    if !api_handle.is_finished() {
-        api_handle.abort();
-    }
 
-    // Wait for all tasks to complete
-    for h in handles {
-        let _ = h.await;
-    }
-    let _ = api_handle.await;
-
-    // Flush all topic storages via ProcessContext
-    for topic_name in ctx.topics() {
-        if let Err(e) = ctx.flush_topic(&topic_name).await {
-            tracing::error!(topic = %topic_name, error = ?e, "flush error");
+        // Wait for all tasks to complete
+        for h in self.handles {
+            let _ = h.await;
         }
-    }
+        let _ = api_handle.await;
 
-    // Flush plugin sinks
-    for ps in &plugin_sinks {
-        if let Err(e) = ps.flush().await {
-            tracing::error!(error = ?e, "plugin sink flush error");
+        // Flush all topic storages via TopicInspector
+        for topic_name in self.inspector.topics() {
+            if let Err(e) = self.inspector.flush_topic(&topic_name).await {
+                tracing::error!(topic = %topic_name, error = ?e, "flush error");
+            }
         }
-    }
 
-    tracing::info!("shutdown complete");
-    Ok(())
+        // Flush plugin sinks
+        for ps in &self.plugin_sinks {
+            if let Err(e) = ps.flush().await {
+                tracing::error!(error = ?e, "plugin sink flush error");
+            }
+        }
+
+        tracing::info!("shutdown complete");
+        Ok(())
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  Entry point
+// ═══════════════════════════════════════════════════════════════
+
+pub async fn run(args: ServeArgs) -> Result<(), ServerError> {
+    tracing::info!("gauss-server starting");
+
+    let config = ServerConfig::load(&args.config)?;
+    tracing::info!(config = %args.config, "loaded config");
+
+    let token = CancellationToken::new();
+    let app = bootstrap(config, &token).await?;
+    app.serve(token).await
 }

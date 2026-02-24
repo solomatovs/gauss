@@ -1,8 +1,8 @@
-use prost_reflect::{DescriptorPool, DynamicMessage, MessageDescriptor};
+use prost_reflect::{DescriptorPool, DynamicMessage, Kind, MessageDescriptor};
 use prost::Message;
 use server_api::{
     parse_plugin_config_opt, plugin_err, plugin_ok, Codec, FormatSerializer, PluginCreateResult,
-    PluginError, RecordData, DataFormat,
+    PluginError, DataFormat, Field, FieldType, RecordSchema, ScalarType,
 };
 
 // ---- Config ----
@@ -23,18 +23,22 @@ pub struct ProtobufCodec {
 }
 
 impl Codec for ProtobufCodec {
-    fn decode(&self, data: &[u8]) -> Result<(serde_json::Value, RecordData), PluginError> {
+    fn decode(&self, data: &[u8]) -> Result<serde_json::Value, PluginError> {
         let message = DynamicMessage::decode(self.descriptor.clone(), data)
             .map_err(|e| PluginError::format_err(format!("protobuf decode: {e}")))?;
         let value: serde_json::Value = serde_json::to_value(&message)?;
-        Ok((value, RecordData::new(data.to_vec(), DataFormat::Protobuf)))
+        Ok(value)
     }
 
-    fn encode(&self, data: &RecordData) -> Result<Vec<u8>, PluginError> {
-        match data.format() {
-            DataFormat::Protobuf => Ok(data.as_bytes().to_vec()),
-            other => Err(PluginError::format_err(format!("Protobuf codec: cannot encode {other:?} format data"))),
-        }
+    fn encode(&self, value: &serde_json::Value) -> Result<Vec<u8>, PluginError> {
+        let message: DynamicMessage =
+            DynamicMessage::deserialize(self.descriptor.clone(), value)
+                .map_err(|e| PluginError::format_err(format!("value→protobuf: {e}")))?;
+        Ok(message.encode_to_vec())
+    }
+
+    fn data_format(&self) -> DataFormat {
+        DataFormat::Protobuf
     }
 }
 
@@ -117,6 +121,41 @@ impl FormatSerializer for ProtobufFormatSerializer {
 
     fn format(&self) -> DataFormat {
         DataFormat::Protobuf
+    }
+
+    fn schema(&self) -> Option<RecordSchema> {
+        let fields: Vec<Field> = self.descriptor.fields()
+            .filter_map(|f| {
+                if f.is_map() {
+                    return None;
+                }
+                let scalar = proto_kind_to_scalar(f.kind())?;
+                let field_type = if f.is_list() {
+                    FieldType::Array(scalar)
+                } else {
+                    FieldType::Scalar(scalar)
+                };
+                Some(Field::new(f.name(), field_type, false))
+            })
+            .collect();
+        if fields.is_empty() { None } else { Some(RecordSchema::new(fields)) }
+    }
+}
+
+/// Отобразить тип протобаф-поля в ScalarType.
+/// Возвращает None для вложенных Message (хранится как Json).
+fn proto_kind_to_scalar(kind: Kind) -> Option<ScalarType> {
+    match kind {
+        Kind::Bool => Some(ScalarType::Bool),
+        Kind::Int32 | Kind::Sint32 | Kind::Sfixed32
+        | Kind::Uint32 | Kind::Fixed32 => Some(ScalarType::Int32),
+        Kind::Int64 | Kind::Sint64 | Kind::Sfixed64
+        | Kind::Uint64 | Kind::Fixed64 => Some(ScalarType::Int64),
+        Kind::Float => Some(ScalarType::Float32),
+        Kind::Double => Some(ScalarType::Float64),
+        Kind::String | Kind::Enum(_) => Some(ScalarType::String),
+        Kind::Bytes => Some(ScalarType::Bytes),
+        Kind::Message(_) => Some(ScalarType::Json),
     }
 }
 
