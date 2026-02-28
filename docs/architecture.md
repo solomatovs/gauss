@@ -174,7 +174,7 @@ config = {
 ### Storage — плагин
 
 Storage — это плагин (.so). Движку всё равно что внутри передаваемых данных. Представь что он выполняет роль посредника между двумя звеньями между котороми передаются байты, он как бы связывает их.
-Движек передаем `storage_config` в Storage плагин. Storage плагин знает сам, нужно ли выполнять сериализацию/десериализацию данных, так как это его часть работы и он выполняет валидацию передаваемого `storage_config`. Движек передает `storage_config` в процессе инициализации. А в процессе работы передает StorageContext который позволяет получить runtime данные
+Движок передаёт `storage_config` в Storage плагин. Storage плагин знает сам, нужно ли выполнять сериализацию/десериализацию данных, так как это его часть работы и он выполняет валидацию передаваемого `storage_config`. Движок передаёт `storage_config` при создании плагина, а `StorageContext` (serializer + mapping) — при `init()`, до начала обработки данных.
 
 **Примеры поведения storage-плагинов:**
 
@@ -232,17 +232,16 @@ storage_config = {
 TopicRecord { ts_ms, data: bytes }
         │
         ▼
-   storage: serializer + schema (из StorageContext)
+   storage: serializer + mapping (из StorageContext)
         │
-   1. deserialize(data) → структурированные данные (все поля формата)
-   2. extract нужные поля по schema.fields[].source
-   3. map на колонки по schema.fields[].name с типом schema.fields[].field_type
-   4. save (INSERT по колонкам / upsert по ключу)
+   1. deserialize(data) → Row(Vec<Value>)
+   2. convert per field: mapping.fields → converter.convert(value)
+   3. write_native(converted_values, mapping.target)
 ```
 
-`TargetSchema` — результат Schema Mapping (движок строит при старте).
-Пользователь контролирует через `schema_map` — Rhai скрипт `map_schema(source, target)`,
-который трансформирует `SourceSchema` в `TargetSchema`.
+`MapSchema` — результат Schema Mapping (движок строит при старте).
+Пользователь контролирует через `schema_map` — Rhai скрипт `map_schema(source, target, map)`,
+который формирует карту трансформации source `Schema` → target `Schema` с конвертерами.
 
 Пользователь описывает это в `storage_config`:
 
@@ -447,54 +446,161 @@ pub trait TopicStorage {
 ```rust
 pub struct StorageContext {
     pub serializer: Option<Arc<dyn FormatSerializer>>,
-    pub schema: Option<TargetSchema>,
+    pub mapping: Option<MapSchema>,
 }
 ```
 
 **Без десериализации** (format не указан в storage_config):
-- `serializer = None`, `schema = None`
+- `serializer = None`, `mapping = None`
 - Пишет `record.data` как есть (файл, ring buffer, blob-колонка)
 
 **С десериализацией** (format + schema_map указаны в storage_config):
 - `serializer` — резолвится движком из `storage_config.format`
-- `schema` — результат Schema Mapping: `TargetSchema` с заполненными `fields` и `attrs`
-- `schema.attrs` содержит DDL-свойства из `storage_config.schema` (table, engine, order_by...)
-- Падает при init() если serializer или schema отсутствуют
+- `mapping` — результат Schema Mapping: `MapSchema` с полными source/target схемами,
+  упорядоченной картой полей и resolved конвертерами
+- Из `mapping.target` — DDL (CREATE TABLE), из `mapping.fields` — data pipeline (конверсия per record)
+- Падает при init() если serializer или mapping отсутствуют
 
 Какой режим использовать — определяет `storage_config` пользователя, не движок.
-Storage получает полный `TargetSchema` — единую структуру для генерации DDL.
+Storage получает полную `MapSchema` — единую структуру для DDL и data pipeline.
+
+## Converters — плагины конвертации полей
+
+Конвертер — маленький бинарный плагин (.so), решающий одну задачу:
+конвертация значения из одного типа/формата в другой. Работает с `Value` —
+включая `Bytes(Cow<[u8]>)` для opaque бинарных данных, сохраняющих
+wire format источника (pg binary, CH native, protobuf...).
+
+```rust
+pub trait FieldConverter: Send + Sync {
+    fn convert<'a>(&self, value: &Value<'a>) -> Value<'a>;
+}
+```
+
+Engine не знает про типы данных — он только загружает плагин и вызывает `convert()`.
+Каждый конвертер — simple, fast, binary. Одна задача, один плагин.
+
+Конфигурация:
+
+<details>
+<summary>[[converters]] — список плагинов конвертеров (TOML)</summary>
+
+```toml
+[[converters]]
+name = "pg-numeric-to-ch-decimal"
+plugin = "./plugins/converter/pg-numeric-to-ch-decimal.so"
+
+[[converters]]
+name = "pg-timestamp-to-ch-datetime"
+plugin = "./plugins/converter/pg-timestamp-to-ch-datetime.so"
+
+[[converters]]
+name = "ch-datetime-to-pg-timestamp"
+plugin = "./plugins/converter/ch-datetime-to-pg-timestamp.so"
+
+[[converters]]
+name = "ch-datetime-to-json-string"
+plugin = "./plugins/converter/ch-datetime-to-json-string.so"
+
+[[converters]]
+name = "ch-datetime-to-proto-int64"
+plugin = "./plugins/converter/ch-datetime-to-proto-int64.so"
+
+[[converters]]
+name = "ch-decimal-to-proto-bytes"
+plugin = "./plugins/converter/ch-decimal-to-proto-bytes.so"
+
+[[converters]]
+name = "ch-lowcardinality-to-proto-string"
+plugin = "./plugins/converter/ch-lowcardinality-to-proto-string.so"
+
+[[converters]]
+name = "pg-jsonb-to-ch-string"
+plugin = "./plugins/converter/pg-jsonb-to-ch-string.so"
+
+[[converters]]
+name = "pg-numeric-to-json-number"
+plugin = "./plugins/converter/pg-numeric-to-json-number.so"
+
+[[converters]]
+name = "pg-timestamp-to-json-string"
+plugin = "./plugins/converter/pg-timestamp-to-json-string.so"
+
+[[converters]]
+name = "pg-jsonb-to-json-object"
+plugin = "./plugins/converter/pg-jsonb-to-json-object.so"
+```
+
+</details>
+
+Примеры конвертеров — DB ↔ DB:
+
+| Плагин | Source | Target | Что делает |
+|--------|--------|--------|------------|
+| `pg-numeric-to-ch-decimal.so` | pg numeric(18,8) | CH Decimal64(8) | rescale binary representation |
+| `ch-datetime-to-pg-timestamp.so` | CH DateTime64(3) | pg TIMESTAMPTZ | CH epoch-based → pg epoch + timezone |
+| `pg-timestamp-to-ch-datetime.so` | pg TIMESTAMPTZ | CH DateTime64(3) | обратная конверсия |
+| `pg-jsonb-to-ch-string.so` | pg JSONB (binary) | CH String | JSONB binary → UTF-8 JSON text |
+| `ch-uuid-to-pg-uuid.so` | CH UUID (little-endian) | pg UUID (big-endian) | byte swap 16 bytes |
+
+Примеры конвертеров — Wire format ↔ DB:
+
+| Плагин | Source | Target | Что делает |
+|--------|--------|--------|------------|
+| `proto-int64-to-ch-int64.so` | protobuf int64 (varint) | CH Int64 (fixed le) | varint decode → fixed 8 bytes |
+| `proto-double-to-pg-float8.so` | protobuf double (le) | pg float8 (be) | endian swap |
+| `msgpack-int-to-ch-int64.so` | msgpack int (variable) | CH Int64 | decode variable → fixed 8 bytes |
+| `arrow-decimal-to-ch-decimal.so` | Arrow Decimal128 (le) | CH Decimal64 | truncate 128→64, rescale |
+| `ch-decimal-to-proto-bytes.so` | CH Decimal64 | protobuf bytes | native CH bytes → opaque proto |
+| `ch-datetime-to-proto-int64.so` | CH DateTime64(3) | protobuf int64 | epoch millis → varint encode |
+| `ch-lowcardinality-to-proto-string.so` | CH LowCardinality(String) | protobuf string | LC dict resolve → plain bytes |
+| `ch-datetime-to-json-string.so` | CH DateTime64(3) | JSON string | epoch millis → ISO 8601 UTF-8 |
+| `pg-numeric-to-json-number.so` | pg numeric (binary) | JSON number | pg binary numeric → IEEE 754 double |
+| `pg-timestamp-to-json-string.so` | pg TIMESTAMPTZ | JSON string | epoch → ISO 8601 UTF-8 |
+| `pg-jsonb-to-json-object.so` | pg JSONB (binary) | JSON object | JSONB wire format → plain JSON |
+| `pg-array-to-json-array.so` | pg ARRAY (binary) | JSON array | pg binary array → JSON `[...]` |
+
+Принцип: **generic passthrough всегда работает, converter оптимизирует конкретную пару**.
+Если типы совместимы (оба — int64, оба — UTF-8 строки) — конвертер не нужен (passthrough).
+Если wire format отличается — пользователь подключает конвертер явно в Rhai скрипте.
 
 ## Schema Mapping
 
 Schema Mapping — механизм трансформации schema из format-а в native типы storage.
 `FieldType` — единая валюта типов во всей системе: source и target.
 
-Вся логика трансформации — в одном Rhai скрипте: `map_schema(source, target)`.
-Скрипт получает обе схемы и модифицирует `TargetSchema` — заполняет `fields`,
-может корректировать `attrs`. TargetSchema зарождается из `storage_config.schema`
-(attrs заполнены, fields пустой) ещё до вызова скрипта.
+Результат маппинга — `MapSchema`: единая resolved структура для DDL и data pipeline.
+Содержит полные source и target схемы, упорядоченную карту полей с конвертерами.
+Rhai скрипт `map_schema(source, target, map)` — центральное место, формирующее карту трансформации.
 
 ```
-storage_config.schema    FormatPlugin       Rhai скрипт              StoragePlugin
-(attrs: DDL props)       .schema()          map_schema(src, tgt)     .init(ctx)
-       │                     │                    │                       │
-       ▼                     ▼                    ▼                       ▼
-  TargetSchema ─┐
-  { fields: [], ├──→ [ map_schema(source, target) ] ──→ TargetSchema
-    attrs: {…} }│                                       { fields: [...],
-  SourceSchema ─┘                                         attrs: {…} }
-                                                              │
-                                                         render DDL
-                                                              │
-                                                         CREATE TABLE
+[[converters]]       FormatPlugin     Rhai скрипт                Engine           StoragePlugin
+(converter plugins)  .schema()        map_schema(src, tgt, map)  resolve          .init(ctx)
+       │                 │                     │                    │                   │
+       ▼                 ▼                     ▼                    ▼                   ▼
+  HashMap<name,       Schema               правила:            MapSchema:          DDL + Data:
+  Arc<FieldConverter>>  │                field / exclude        { source,           CREATE TABLE
+       │                │                computed               target,             deserialize
+       │                │                     │                  fields: [           → convert
+       │                └─────────┬───────────┘                   FieldMap {         → write
+       │                          │                                 source: FieldRef,
+       └────────────→ engine resolve ─────────────────→             target: Field,
+                                                                    converter
+                                                                  }, ...] }
 ```
 
 Движок при старте:
-1. Загружает format plugin → `schema()` → `SourceSchema`
-2. Строит начальный `TargetSchema { fields: [], attrs }` из `storage_config.schema`
-3. Загружает `[[schema_maps]]` → Rhai скрипт
-4. Вызывает `map_schema(source, target)` → `TargetSchema` (fields заполнены)
-5. `StorageContext { serializer, schema }` → `storage.init(ctx)`
+1. Загружает `[[converters]]` → `HashMap<String, Arc<dyn FieldConverter>>`
+2. Загружает format plugin → `schema()` → `Schema` (source)
+3. Строит начальную target `Schema { attrs }` из `storage_config.schema`
+4. Загружает `[[schema_maps]]` → Rhai скрипт
+5. Вызывает `map_schema(source, target, map)` → map содержит правила трансформации
+6. Engine resolve: правила + source schema + converters → `MapSchema`
+   - `map.field()` → создаёт FieldRef (index в source.fields), подключает converter если указан
+   - `map.exclude()` → FieldMap { source: Some(FieldRef), target: None, Excluded }
+   - `map.computed()` → FieldMap { source: None, target: Some(Field), Computed }
+   - собирает итоговую target Schema из target-сторон правил + target.attrs
+7. `StorageContext { serializer, mapping: Some(MapSchema) }` → `storage.init(ctx)`
 
 ### FieldType — структурированный тип
 
@@ -529,21 +635,38 @@ pub struct FieldType {
 | `{ name: "DateTime64", attrs: { precision: 3 } }` | `{ name: "TIMESTAMP", attrs: { precision: 3, timezone: true } }` |
 | `{ name: "Array", attrs: { element: { name: "Int64" } } }` | `{ name: "ARRAY", attrs: { element: { name: "BIGINT" } } }` |
 
-### SourceSchema — от format plugin
+### Schema — единое описание схемы
+
+`Schema` — единый тип для описания схемы данных. Используется и как source (от format plugin),
+и как target (для storage plugin). Одинаковая структура — удобно для сравнения, introspection,
+передачи между компонентами.
 
 ```rust
-pub struct SourceSchema {
-    pub fields: Vec<SourceField>,
-    pub attrs: HashMap<String, Value>,  // source-specific метаданные
+pub struct Schema {
+    pub fields: Vec<Field>,
+    pub attrs: HashMap<String, Value>,
 }
 
-pub struct SourceField {
+pub struct Field {
     pub name: String,           // "symbol" для плоских, "$.order.id" для иерархических
     pub field_type: FieldType,
+    pub props: HashMap<String, Value>,  // field-level свойства (для target: default, materialized...
+                                        // для source: обычно пусто)
 }
 ```
 
-`attrs` — метаданные source, format plugin заполняет из своей конфигурации:
+Один тип, разная семантика:
+
+| Роль | fields | attrs | props |
+|------|--------|-------|-------|
+| **source** (от format plugin) | поля формата | source метаданные (package, message...) | обычно пусто |
+| **target** (для storage DDL) | колонки storage | DDL метаданные (table, engine, order_by...) | default, materialized, codec... |
+| **existing** (от storage introspection) | текущие колонки таблицы | текущие DDL свойства | текущие field props |
+
+Позиция поля в `fields` определяет его `index` — для source это позиция в `Row(Vec<Value>)`
+после `deserialize()`. Отдельное поле `index` не нужно — порядок в Vec IS the index.
+
+Примеры `attrs` по ролям:
 
 | Source | attrs |
 |--------|-------|
@@ -565,7 +688,7 @@ FormatSerializer — runtime объект, выполняет `bytes ↔ Row`:
 ```rust
 pub trait FormatSerializer {
     fn deserialize<'a>(&self, bytes: &'a [u8]) -> Row<'a>;
-    fn serialize(&self, row: &Row) -> Vec<u8>;
+    fn serialize(&self, row: &Row<'_>) -> Vec<u8>;
 }
 ```
 
@@ -585,12 +708,12 @@ FormatPlugin — конфигурация формата. Создаёт seriali
 ```rust
 pub trait FormatPlugin {
     fn serializer(&self) -> Arc<dyn FormatSerializer>;
-    fn schema(&self) -> Option<SourceSchema>;
+    fn schema(&self) -> Option<Schema>;
 }
 ```
 
 - `serializer()` — создаёт FormatSerializer с внутренним знанием schema и конфига формата
-- `schema()` — возвращает SourceSchema для Schema Mapping Pipeline
+- `schema()` — возвращает `Schema` для Schema Mapping Pipeline (source schema)
 
 `schema()` возвращает `None` если формат не имеет фиксированной схемы и не сконфигурирован с `fields`.
 Если `schema_map` указан, но `schema()` возвращает `None` — ошибка при старте.
@@ -599,7 +722,7 @@ pub trait FormatPlugin {
 
 Плоские форматы (protobuf, Arrow) — поля уже на верхнем уровне, `name` = имя поля.
 Иерархические форматы (JSON, MessagePack) — документ содержит вложенные объекты
-и массивы. `name` в `SourceField` — путь внутри документа (JSONPath).
+и массивы. `name` в `Field` — путь внутри документа (JSONPath).
 Format plugin при runtime использует `name` как путь для извлечения значений.
 
 Входной JSON:
@@ -636,9 +759,9 @@ config = {
 }
 ```
 
-Результат `schema()` — `SourceSchema` с path-именами:
+Результат `schema()` — `Schema` с path-именами:
 
-| SourceField.name | SourceField.field_type |
+| Field.name | Field.field_type |
 |-----------------|----------------------|
 | `$.order.id` | `{ name: "int64", attrs: {} }` |
 | `$.order.customer.name` | `{ name: "string", attrs: {} }` |
@@ -647,41 +770,21 @@ config = {
 | `$.order.items[*].price` | `{ name: "array", attrs: { element: "double" } }` |
 | `$.ts` | `{ name: "int64", attrs: {} }` |
 
-В Rhai скрипте `source` ссылается на `name` напрямую — по полному пути:
+В Rhai скрипте `map.field()` ссылается на source `name` напрямую — по полному пути:
 ```rhai
-target.fields.push(#{ name: "order_id", field_type: #{ name: "BIGINT", attrs: #{} },
-                       source: "$.order.id" });
+map.field("$.order.id", #{
+    name: "order_id",
+    field_type: #{ name: "BIGINT", attrs: #{} },
+});
 ```
 
-Переименование из path в короткое имя колонки — внутри Rhai скрипта (`source` → `name`),
+Переименование из path в короткое имя колонки — внутри Rhai скрипта (source name → target name),
 а не format config. Один уровень ответственности, нет скрытых алиасов.
 
-### TargetSchema — для storage plugin
+### Target Schema — свойства для DDL
 
-```rust
-pub struct TargetSchema {
-    pub fields: Vec<TargetField>,
-    pub attrs: HashMap<String, Value>,  // DDL-level свойства (table, engine, order_by...)
-}
-
-pub struct TargetField {
-    pub name: String,
-    pub field_type: FieldType,
-    pub source: Option<String>,
-    pub props: HashMap<String, Value>,  // field-level свойства (default, materialized...)
-}
-```
-
-Симметрия с SourceSchema:
-
-| | SourceSchema | TargetSchema |
-|--|-------------|-------------|
-| `fields` | `Vec<SourceField>` — поля формата | `Vec<TargetField>` — колонки storage |
-| `attrs` | source метаданные (package, message...) | DDL метаданные (table, engine, order_by...) |
-
-- `fields` — generic, движок понимает
-- `attrs` — движок заполняет из `storage_config.schema`, Rhai скрипт может модифицировать
-- `props` на каждом field — storage интерпретирует сам
+Target schema — тот же тип `Schema`, но с заполненными `props` на полях и DDL-атрибутами в `attrs`.
+Определение `Schema` и `Field` — в секции выше. Здесь — примеры target-специфичных свойств.
 
 Примеры `attrs` (schema-level):
 
@@ -704,8 +807,59 @@ pub struct TargetField {
 | Postgres | `generated = "ask - bid"` | `GENERATED ALWAYS AS (ask - bid) STORED` |
 | Postgres | `not_null = true` | `NOT NULL` |
 
-Storage получает `TargetSchema` через `StorageContext.schema` — единая структура,
-достаточная для генерации полного DDL (CREATE TABLE с engine, columns, constraints).
+Target schema — промежуточный формат. Rhai скрипт читает `target.attrs` и формирует правила
+через `map` builder. Engine затем собирает из правил + source schema + converters финальную `MapSchema`.
+
+### MapSchema — результат маппинга
+
+```rust
+/// Единая карта трансформации source → target
+pub struct MapSchema {
+    pub source: Schema,                 // полная source schema (preserved)
+    pub target: Schema,                 // итоговая target schema (для DDL)
+    pub fields: Vec<FieldMap>,          // упорядоченная карта (порядок из Rhai скрипта)
+}
+
+/// Ссылка на source поле (позиция в source.fields и в Row)
+pub struct FieldRef {
+    pub index: usize,                   // позиция в source.fields и Row
+    pub name: String,                   // имя source поля (для observability)
+}
+
+/// Одно поле — симметричная связка source↔target + конвертер
+pub struct FieldMap {
+    pub source: Option<FieldRef>,       // None → computed (default/materialized)
+    pub target: Option<Field>,          // None → excluded
+    pub converter: Converter,
+}
+
+pub enum Converter {
+    Passthrough,                        // value as-is, конверсия не нужна
+    Plugin(Arc<dyn FieldConverter>),    // загруженный плагин конвертера (.so)
+    Computed,                           // нет данных из Row — БД сама (default/materialized)
+    Excluded,                           // поле исключено из target
+}
+```
+
+`FieldRef` — легковесная ссылка на source поле. `index` — позиция в `source.fields` и в `Row(Vec<Value>)`.
+`name` — для observability (логи, метрики), чтобы не лезть в `source.fields[index]`.
+
+Четыре комбинации FieldMap:
+
+| source | target | converter | смысл |
+|--------|--------|-----------|-------|
+| Some(FieldRef) | Some(Field) | Passthrough | прямой маппинг, типы совместимы |
+| Some(FieldRef) | Some(Field) | Plugin(..) | маппинг с конверсией через плагин |
+| Some(FieldRef) | None | Excluded | поле исключено из target |
+| None | Some(Field) | Computed | вычисляемое поле (default, materialized) |
+
+`fields` — единый упорядоченный список (порядок определён Rhai скриптом). Из него:
+- **DDL**: все `target.is_some()` → генерация CREATE TABLE
+- **Data pipeline**: все `source.is_some() && target.is_some()` → конверсия per record
+- **Observability**: исключения видны, полная картина трансформации
+
+Source и target schema сохраняются полностью внутри MapSchema — ничего не потеряно.
+Storage получает `MapSchema` через `StorageContext.mapping` — единая структура для DDL и data pipeline.
 
 ### render_type — storage рендерит FieldType в DDL
 
@@ -732,35 +886,46 @@ Postgres render_type:
 | `{ name: "TIMESTAMP", attrs: { precision: 3, timezone: true } }` | `TIMESTAMP(3) WITH TIME ZONE` |
 | `{ name: "ARRAY", attrs: { element: { name: "BIGINT" } } }` | `BIGINT[]` |
 
-### Rhai скрипт — map_schema(source, target)
+### Rhai скрипт — map_schema(source, target, map)
 
 Трансформация schema выполняется **скриптом** (Rhai).
 Rhai — встраиваемый скриптовый язык для Rust. Чистый Rust, без FFI,
 компилируется в бинарник как обычный крейт. Sandbox по умолчанию —
 нет доступа к файлам, сети, системе.
 
-Один скрипт — единый механизм для всей трансформации: фильтрация, переименование,
-маппинг типов, extra колонки. Никаких ограничений на сложность логики.
+Rhai скрипт — центральное место формирования карты трансформации.
+Получает три аргумента:
 
 ```
-fn map_schema(source, target) → TargetSchema
-  source.fields — массив SourceField: #{ name, field_type: #{ name, attrs } }
-  source.attrs  — метаданные source: #{ package, message, ... }
-  target.fields — пустой массив (скрипт заполняет)
-  target.attrs  — DDL-свойства из storage_config.schema: #{ table, engine, order_by, ... }
-  return        — модифицированный target
+fn map_schema(source, target, map)
+  source — Schema от format plugin (read-only)
+    source.fields — массив Field: #{ name, field_type: #{ name, attrs }, props: #{} }
+    source.attrs  — метаданные source: #{ package, message, ... }
+  target — начальная Schema из storage_config.schema (read-only)
+    target.attrs  — DDL-свойства: #{ table, engine, order_by, ... }
+  map    — builder карты трансформации (write)
 ```
 
-Каждый элемент `target.fields` — TargetField:
-- `name` — имя колонки
-- `field_type` — `#{ name, attrs }` — FieldType для target
-- `source` — (опционально) имя поля в данных, из которого извлекается значение
-- `props` — (опционально) `#{ default, materialized, codec, ... }` — свойства storage
+API builder-а `map`:
+
+| Метод | Описание |
+|-------|----------|
+| `map.field(source_name, target_def)` | маппинг source → target (`#{ name, field_type, converter?, props? }`) |
+| `map.exclude(source_name)` | исключить source поле |
+| `map.computed(target_def)` | вычисляемое поле (`#{ name, field_type, props }`) |
+| `map.has(source_name)` | проверить, есть ли уже правило для поля |
+
+Если `converter` не указан в `target_def` → `Passthrough`.
+Если указан — имя из `[[converters]]`, engine загружает плагин при resolve.
+
+Пример — Protobuf → ClickHouse:
+
+<details>
+<summary>proto-to-clickhouse.rhai — маппинг типов + map_schema</summary>
 
 ```rhai
 // scripts/schema-map/proto-to-clickhouse.rhai
-//
-// Вспомогательная функция: маппинг одного типа
+
 fn map_field_type(ft) {
     if ft.name == "decimal" {
         let p = ft.attrs.precision ?? 38;
@@ -795,112 +960,221 @@ fn map_field_type(ft) {
     }
 }
 
-// Главная функция: модифицирует target schema
-fn map_schema(source, target) {
-    // target.attrs уже заполнен из storage_config.schema:
-    //   { table: "quotes", engine: "MergeTree", order_by: "(ts_ms)", ... }
-    // target.fields пустой — заполняем
+fn map_schema(source, target, map) {
+    // target.attrs доступен: { table: "quotes", engine: "MergeTree", order_by: "(ts_ms)" }
 
-    // ts_ms — поле TopicRecord, добавляется первым
-    target.fields.push(#{ name: "ts_ms", field_type: #{ name: "Int64", attrs: #{} },
-                          source: "ts_ms" });
+    // исключение — exchange не нужен в target
+    map.exclude("exchange");
 
+    // явный маппинг с конкретным типом
+    map.field("ts_ms", #{
+        name: "ts_ms",
+        field_type: #{ name: "Int64", attrs: #{} },
+    });
+
+    // переименование + override типа
+    map.field("symbol", #{
+        name: "sym",
+        field_type: #{ name: "LowCardinality", attrs: #{ inner: #{ name: "String" } } },
+    });
+
+    // авто-маппинг оставшихся полей
     for field in source.fields {
-        // фильтрация: пропускаем ненужные поля
-        if field.name == "internal_id" || field.name == "debug_info" { continue; }
-        if field.name == "exchange" { continue; }
-
-        // переименование + переопределение типа
-        if field.name == "symbol" {
-            target.fields.push(#{
-                name: "sym",
-                field_type: #{ name: "LowCardinality", attrs: #{ inner: #{ name: "String" } } },
-                source: field.name,
-            });
-            continue;
-        }
-
-        // автоматический маппинг типа
-        let mapped = map_field_type(field.field_type);
-        if mapped == () { throw `unmapped type: ${field.field_type.name}`; }
-        target.fields.push(#{ name: field.name, field_type: mapped, source: field.name });
+        if map.has(field.name) { continue; }
+        let ft = map_field_type(field.field_type);
+        if ft == () { throw `unmapped type: ${field.field_type.name}`; }
+        map.field(field.name, #{ name: field.name, field_type: ft });
     }
 
-    // extra колонки: default, materialized
-    target.fields.push(#{ name: "wrt_ts", field_type: #{ name: "DateTime64", attrs: #{ precision: 3 } },
-                          props: #{ default: "now64(3)" } });
-    target.fields.push(#{ name: "spread", field_type: #{ name: "Float64", attrs: #{} },
-                          props: #{ materialized: "ask - bid" } });
-
-    target
+    // вычисляемые поля
+    map.computed(#{
+        name: "wrt_ts",
+        field_type: #{ name: "DateTime64", attrs: #{ precision: 3 } },
+        props: #{ default: "now64(3)" },
+    });
+    map.computed(#{
+        name: "spread",
+        field_type: #{ name: "Float64", attrs: #{} },
+        props: #{ materialized: "ask - bid" },
+    });
 }
 ```
 
-Postgres — другая логика, тот же интерфейс:
+</details>
+
+Пример — Protobuf → Postgres:
+
+<details>
+<summary>proto-to-postgres.rhai — маппинг типов для Postgres</summary>
 
 ```rhai
 // scripts/schema-map/proto-to-postgres.rhai
 
 fn map_field_type(ft) {
-    if ft.name == "decimal" {
-        let a = #{};
-        let p = ft.attrs.precision ?? ();
-        let s = ft.attrs.scale ?? ();
-        if p != () { a.precision = p; }
-        if s != () { a.scale = s; }
-        return #{ name: "NUMERIC", attrs: a };
-    }
-    if ft.name == "varchar" {
-        let n = ft.attrs.length ?? ();
-        if n != () && n != "max" { return #{ name: "VARCHAR", attrs: #{ length: n } }; }
-        return #{ name: "TEXT", attrs: #{} };
-    }
-    if ft.name == "string" { return #{ name: "TEXT", attrs: #{} }; }
-    if ft.name == "timestamp" {
-        let a = #{ timezone: true };
-        let p = ft.attrs.precision ?? ();
-        if p != () { a.precision = p; }
-        return #{ name: "TIMESTAMP", attrs: a };
-    }
-    if ft.name == "array" {
-        let inner = map_field_type(#{ name: ft.attrs.element, attrs: #{} });
-        if inner != () { return #{ name: "ARRAY", attrs: #{ element: inner } }; }
-        return ();
-    }
+    // ... стандартный маппинг типов для Postgres
     switch ft.name {
-        "double" => #{ name: "DOUBLE PRECISION", attrs: #{} },
-        "float"  => #{ name: "REAL",             attrs: #{} },
-        "int64"  => #{ name: "BIGINT",           attrs: #{} },
-        "int32"  => #{ name: "INTEGER",          attrs: #{} },
-        "uint64" => #{ name: "BIGINT",           attrs: #{} },
-        "bool"   => #{ name: "BOOLEAN",          attrs: #{} },
-        "bytes"  => #{ name: "BYTEA",            attrs: #{} },
-        _        => ()
+        "double"  => #{ name: "DOUBLE PRECISION", attrs: #{} },
+        "float"   => #{ name: "REAL",             attrs: #{} },
+        "int64"   => #{ name: "BIGINT",           attrs: #{} },
+        "int32"   => #{ name: "INTEGER",          attrs: #{} },
+        "string"  => #{ name: "TEXT",              attrs: #{} },
+        "bool"    => #{ name: "BOOLEAN",           attrs: #{} },
+        "bytes"   => #{ name: "BYTEA",             attrs: #{} },
+        _         => ()
     }
 }
 
-fn map_schema(source, target) {
-    target.fields.push(#{ name: "ts_ms", field_type: #{ name: "BIGINT", attrs: #{} },
-                          source: "ts_ms" });
+fn map_schema(source, target, map) {
+    map.field("ts_ms", #{ name: "ts_ms", field_type: #{ name: "BIGINT", attrs: #{} } });
 
     for field in source.fields {
-        let mapped = map_field_type(field.field_type);
-        if mapped == () { throw `unmapped type: ${field.field_type.name}`; }
-        target.fields.push(#{ name: field.name, field_type: mapped, source: field.name });
+        if map.has(field.name) { continue; }
+        let ft = map_field_type(field.field_type);
+        if ft == () { throw `unmapped type: ${field.field_type.name}`; }
+        map.field(field.name, #{ name: field.name, field_type: ft });
     }
 
-    target.fields.push(#{ name: "wrt_ts", field_type: #{ name: "TIMESTAMPTZ", attrs: #{} },
-                          props: #{ default: "now()" } });
-
-    target
+    map.computed(#{
+        name: "wrt_ts",
+        field_type: #{ name: "TIMESTAMPTZ", attrs: #{} },
+        props: #{ default: "now()" },
+    });
 }
 ```
+
+</details>
+
+Пример — Postgres → ClickHouse с конвертерами:
+
+<details>
+<summary>pg-to-clickhouse.rhai — маппинг с плагинами конвертеров</summary>
+
+```rhai
+// scripts/schema-map/pg-to-clickhouse.rhai
+
+fn map_schema(source, target, map) {
+    // типы разных СУБД — нужны конвертеры для бинарных форматов
+    map.field("bid", #{
+        name: "bid",
+        field_type: #{ name: "Decimal64", attrs: #{ scale: 8 } },
+        converter: "pg-numeric-to-ch-decimal",
+    });
+    map.field("ask", #{
+        name: "ask",
+        field_type: #{ name: "Decimal64", attrs: #{ scale: 8 } },
+        converter: "pg-numeric-to-ch-decimal",
+    });
+
+    map.field("created_at", #{
+        name: "created_at",
+        field_type: #{ name: "DateTime64", attrs: #{ precision: 3 } },
+        converter: "pg-timestamp-to-ch-datetime",
+    });
+
+    // passthrough — типы совместимы
+    map.field("symbol", #{ name: "sym", field_type: #{ name: "String", attrs: #{} } });
+    map.field("volume", #{ name: "volume", field_type: #{ name: "Int64", attrs: #{} } });
+}
+```
+
+</details>
+
+Пример — Postgres → JSON (экспорт из БД в JSON sink):
+
+<details>
+<summary>pg-orders-to-json.rhai — cross-format с конвертерами</summary>
+
+```rhai
+// scripts/schema-map/pg-orders-to-json.rhai
+
+fn map_schema(source, target, map) {
+    // pg text → JSON string: passthrough
+    map.field("customer_name", #{ name: "customer_name", field_type: #{ name: "string", attrs: #{} } });
+
+    // pg int8 → JSON number: passthrough
+    map.field("order_id", #{ name: "id", field_type: #{ name: "number", attrs: #{} } });
+
+    // pg numeric → JSON number: конвертер (pg binary numeric → IEEE 754 double)
+    map.field("total", #{
+        name: "total",
+        field_type: #{ name: "number", attrs: #{} },
+        converter: "pg-numeric-to-json-number",
+    });
+
+    // pg timestamptz → JSON string: конвертер (epoch → ISO 8601)
+    map.field("created_at", #{
+        name: "created_at",
+        field_type: #{ name: "string", attrs: #{} },
+        converter: "pg-timestamp-to-json-string",
+    });
+
+    // pg jsonb (binary) → JSON object: конвертер (JSONB wire → plain JSON)
+    map.field("metadata", #{
+        name: "metadata",
+        field_type: #{ name: "object", attrs: #{} },
+        converter: "pg-jsonb-to-json-object",
+    });
+
+    map.exclude("internal_flags");
+    map.exclude("updated_at");
+}
+```
+
+</details>
+
+Пример — ClickHouse → Protobuf (экспорт из CH в protobuf sink):
+
+<details>
+<summary>ch-quotes-to-protobuf.rhai — экспорт из CH в бинарный формат</summary>
+
+```rhai
+// scripts/schema-map/ch-quotes-to-protobuf.rhai
+
+fn map_schema(source, target, map) {
+    // target.attrs: { format: "protobuf", message: "Quote", package: "market" }
+
+    // CH LowCardinality(String) → proto string: конвертер (LC dict → plain bytes)
+    map.field("sym", #{
+        name: "symbol",
+        field_type: #{ name: "string", attrs: #{} },
+        converter: "ch-lowcardinality-to-proto-string",
+    });
+
+    // CH Decimal64 → proto bytes: конвертер (protobuf не имеет decimal)
+    map.field("bid", #{
+        name: "bid",
+        field_type: #{ name: "bytes", attrs: #{} },
+        converter: "ch-decimal-to-proto-bytes",
+    });
+    map.field("ask", #{
+        name: "ask",
+        field_type: #{ name: "bytes", attrs: #{} },
+        converter: "ch-decimal-to-proto-bytes",
+    });
+
+    // CH Int64 → proto int64: passthrough
+    map.field("volume", #{ name: "volume", field_type: #{ name: "int64", attrs: #{} } });
+
+    // CH DateTime64(3) → proto int64: конвертер (epoch millis)
+    map.field("ts_ms", #{
+        name: "timestamp_ms",
+        field_type: #{ name: "int64", attrs: #{} },
+        converter: "ch-datetime-to-proto-int64",
+    });
+
+    // CH computed поля — исключаем, в protobuf не нужны
+    map.exclude("spread");
+    map.exclude("wrt_ts");
+}
+```
+
+</details>
 
 ### schema_maps — описание маппинга
 
 `[[schema_maps]]` — полный рецепт трансформации schema из формата в storage.
-Единственное поле — `script`: путь к Rhai скрипту с функцией `map_schema(source, target)`.
-Вся логика (фильтрация, переименование, маппинг типов, extra колонки) — внутри скрипта.
+Единственное поле — `script`: путь к Rhai скрипту с функцией `map_schema(source, target, map)`.
+Вся логика (фильтрация, переименование, маппинг типов, конвертеры) — внутри скрипта.
 Определяется на верхнем уровне конфига, переиспользуется между topic-ами.
 
 ```toml
@@ -917,7 +1191,7 @@ storage_config = {
     format = "proto-quote",
     schema_map = "proto-quote-to-clickhouse",
 
-    # DDL → TargetSchema.attrs (до вызова Rhai скрипта)
+    # DDL → target Schema.attrs (до вызова Rhai скрипта)
     schema = { table = "quotes", engine = "MergeTree", order_by = "(ts_ms)" },
 
     # storage plugin — connection + operational
@@ -927,40 +1201,42 @@ storage_config = {
 
 ### Цепочка Schema Mapping
 
-```
-1. format-плагин → SourceSchema (каждое поле — FieldType):
-     symbol:      { name: "string",  attrs: {} }
-     bid:         { name: "decimal", attrs: { precision: 18, scale: 8 } }
-     ask:         { name: "decimal", attrs: { precision: 18, scale: 8 } }
-     volume:      { name: "int64",   attrs: {} }
-     exchange:    { name: "string",  attrs: {} }
-     internal_id: { name: "string",  attrs: {} }
-     debug_info:  { name: "bytes",   attrs: {} }
+<details>
+<summary>Цепочка: Protobuf → ClickHouse (5 шагов)</summary>
 
-2. начальный TargetSchema из storage_config.schema:
-     fields: []
+```
+1. format-плагин "proto-quote" → schema() → Schema (6 полей proto):
+     symbol:   { name: "string", attrs: {} }
+     bid:      { name: "double", attrs: {} }
+     ask:      { name: "double", attrs: {} }
+     volume:   { name: "int64",  attrs: {} }
+     ts_ms:    { name: "int64",  attrs: {} }
+     exchange: { name: "string", attrs: {} }
+
+2. начальная target Schema из storage_config.schema:
      attrs: { table: "quotes", engine: "MergeTree", order_by: "(ts_ms)" }
 
-3. map_schema(source, target) — Rhai скрипт модифицирует target:
-     — пропускает internal_id, debug_info, exchange (фильтрация)
-     — ts_ms: добавляет как { name: "Int64" }, source: "ts_ms"
-     — symbol → sym: переименование + override тип LowCardinality(String)
-     — bid:    map_field_type(decimal(18,8)) → { name: "Decimal64", attrs: { scale: 8 } }
-     — ask:    map_field_type(decimal(18,8)) → { name: "Decimal64", attrs: { scale: 8 } }
-     — volume: map_field_type(int64)         → { name: "Int64", attrs: {} }
-     — wrt_ts: extra, props: { default: "now64(3)" }
-     — spread: extra, props: { materialized: "ask - bid" }
-     → TargetSchema (fields заполнены, attrs сохранены)
+3. map_schema(source, target, map) — Rhai скрипт формирует карту трансформации:
+     — map.exclude("exchange")
+     — map.field("ts_ms", #{ name: "ts_ms", field_type: #{ name: "Int64" } })
+     — map.field("symbol", #{ name: "sym", field_type: #{ name: "LowCardinality", attrs: #{ inner: #{ name: "String" } } } })
+     — авто-маппинг bid, ask, volume через map_field_type():
+       double → Float64, int64 → Int64
 
-4. storage render DDL из TargetSchema (fields + attrs) → CREATE TABLE:
+4. engine resolve → MapSchema (FieldMap[] с конвертерами + итоговая target Schema)
+     — map.computed(wrt_ts, spread) → FieldMap { source: None, target: Some(Field), Computed }
+
+5. storage render DDL из MapSchema.target (fields + attrs) → CREATE TABLE:
      ts_ms    Int64,
      sym      LowCardinality(String),
-     bid      Decimal64(8),
-     ask      Decimal64(8),
+     bid      Float64,
+     ask      Float64,
      volume   Int64,
      wrt_ts   DateTime64(3) DEFAULT now64(3),
      spread   Float64 MATERIALIZED ask - bid
 ```
+
+</details>
 
 Если `map_field_type()` возвращает `()` и скрипт не обрабатывает это — `throw` при старте.
 
@@ -997,71 +1273,75 @@ storage_config = {
 
 Rhai скрипт для этого маппинга:
 
+<details>
+<summary>json-orders-to-postgres.rhai — JSONPath → колонки Postgres</summary>
+
 ```rhai
 // scripts/schema-map/json-orders-to-postgres.rhai
 
-fn map_field_type(ft) {
-    // ... стандартный маппинг типов для Postgres (как выше)
-}
+fn map_schema(source, target, map) {
+    // target.attrs: { table: "orders" }
 
-fn map_schema(source, target) {
-    for field in source.fields {
-        // пропускаем items[*].price — не нужен в target
-        if field.name == "$.order.items[*].price" { continue; }
+    // исключаем — не нужны в target
+    map.exclude("$.order.items[*].sku");
+    map.exclude("$.order.items[*].price");
 
-        // переименование JSONPath → короткие имена колонок
-        if field.name == "$.order.id" {
-            target.fields.push(#{ name: "order_id", field_type: #{ name: "BIGINT", attrs: #{} },
-                                  source: field.name });
-            continue;
-        }
-        if field.name == "$.order.customer.name" {
-            target.fields.push(#{ name: "customer_name", field_type: #{ name: "TEXT", attrs: #{} },
-                                  source: field.name });
-            continue;
-        }
-        if field.name == "$.order.customer.tags" {
-            target.fields.push(#{ name: "customer_tags",
-                                  field_type: #{ name: "ARRAY", attrs: #{ element: #{ name: "TEXT", attrs: #{} } } },
-                                  source: field.name });
-            continue;
-        }
-        if field.name == "$.ts" {
-            target.fields.push(#{ name: "ts", field_type: #{ name: "BIGINT", attrs: #{} },
-                                  source: field.name });
-            continue;
-        }
-    }
+    // переименование JSONPath → короткие имена колонок
+    map.field("$.order.id", #{
+        name: "order_id",
+        field_type: #{ name: "BIGINT", attrs: #{} },
+    });
+    map.field("$.order.customer.name", #{
+        name: "customer_name",
+        field_type: #{ name: "TEXT", attrs: #{} },
+    });
+    map.field("$.order.customer.tags", #{
+        name: "customer_tags",
+        field_type: #{ name: "ARRAY", attrs: #{ element: #{ name: "TEXT", attrs: #{} } } },
+    });
+    map.field("$.ts", #{
+        name: "ts",
+        field_type: #{ name: "BIGINT", attrs: #{} },
+    });
 
-    target.fields.push(#{ name: "created_at", field_type: #{ name: "TIMESTAMPTZ", attrs: #{} },
-                          props: #{ default: "now()" } });
-
-    target
+    // вычисляемое поле
+    map.computed(#{
+        name: "created_at",
+        field_type: #{ name: "TIMESTAMPTZ", attrs: #{} },
+        props: #{ default: "now()" },
+    });
 }
 ```
 
-Цепочка:
+</details>
+
+<details>
+<summary>Цепочка: JSON → Postgres (5 шагов)</summary>
+
 ```
-1. JSON format plugin → schema() → SourceSchema (name = JSONPath):
+1. JSON format plugin → schema() → Schema (name = JSONPath):
      $.order.id:             { name: "int64",  attrs: {} }
      $.order.customer.name:  { name: "string", attrs: {} }
      $.order.customer.tags:  { name: "array",  attrs: { element: "string" } }
+     $.order.items[*].sku:   { name: "array",  attrs: { element: "string" } }
      $.order.items[*].price: { name: "array",  attrs: { element: "double" } }
      $.ts:                   { name: "int64",  attrs: {} }
 
-2. начальный TargetSchema из storage_config.schema:
-     fields: [], attrs: { table: "orders" }
+2. начальная target Schema из storage_config.schema:
+     attrs: { table: "orders" }
 
-3. map_schema(source, target) — Rhai скрипт модифицирует target:
-     — пропускает $.order.items[*].price
-     — $.order.id            → order_id,       BIGINT
-     — $.order.customer.name → customer_name,  TEXT
-     — $.order.customer.tags → customer_tags,   TEXT[]
-     — $.ts                  → ts,             BIGINT
-     — created_at: extra, props: { default: "now()" }
-     → TargetSchema
+3. map_schema(source, target, map) — Rhai скрипт формирует карту трансформации:
+     — map.exclude("$.order.items[*].sku")
+     — map.exclude("$.order.items[*].price")
+     — $.order.id            → order_id,       BIGINT     (passthrough)
+     — $.order.customer.name → customer_name,  TEXT       (passthrough)
+     — $.order.customer.tags → customer_tags,   TEXT[]    (passthrough)
+     — $.ts                  → ts,             BIGINT     (passthrough)
+     — map.computed: created_at, props: { default: "now()" }
 
-4. storage render DDL → CREATE TABLE:
+4. engine resolve → MapSchema (FieldMap[] с конвертерами + итоговая target Schema)
+
+5. storage render DDL из MapSchema.target → CREATE TABLE:
      order_id       BIGINT,
      customer_name  TEXT,
      customer_tags  TEXT[],
@@ -1069,8 +1349,10 @@ fn map_schema(source, target) {
      created_at     TIMESTAMPTZ DEFAULT now()
 ```
 
-Schema map ссылается на source-поля по их полному JSONPath в поле `source`.
-Переименование path → короткое имя колонки — в `name` возвращаемой структуры.
+</details>
+
+Schema map ссылается на source-поля по их полному JSONPath.
+Переименование path → короткое имя колонки — в `name` target_def.
 
 ### Несколько schema_maps для одного формата
 
@@ -1097,58 +1379,62 @@ storage = "postgres"
 storage_config = { format = "proto-quote", schema_map = "proto-quote-to-postgres", ... }
 ```
 
-### Свойства TargetField (результат map_schema)
+### Свойства target Field (в Rhai скрипте)
 
-Каждый элемент `target.fields`, заполняемого скриптом `map_schema(source, target)` — TargetField:
+Каждый `target_def` в вызовах `map.field()` и `map.computed()` содержит:
 
 | Свойство | Обязательное | Описание |
 |----------|-------------|----------|
-| `name` | да | имя колонки в storage |
+| `name` | да | имя колонки в target |
 | `field_type` | да | `FieldType`-объект `#{ name, attrs }` — target тип |
-| `source` | нет | имя поля в данных. Если указан — значение извлекается из десериализованных данных |
+| `converter` | нет | имя из `[[converters]]` — плагин конверсии. Если не указан → Passthrough |
 | `props` | нет | `#{ default, materialized, codec, ... }` — storage-specific свойства |
 
-Варианты колонки:
+Варианты вызовов map API:
 
-| Вариант | source | props | Поведение |
-|---------|--------|-------|-----------|
-| Из данных | `source: "bid"` | — | значение извлекается из десериализованных данных |
-| С default | — | `props: #{ default: "now64(3)" }` | storage создаёт DEFAULT, значение не извлекается |
-| Вычисляемая | — | `props: #{ materialized: "ask - bid" }` | storage создаёт MATERIALIZED (CH), GENERATED (PG) |
-| Из данных + fallback | `source: "region"` | `props: #{ default: "'unknown'" }` | из данных, если нет — DEFAULT |
+| Вызов | Что создаёт | Converter |
+|-------|-------------|-----------|
+| `map.field("bid", #{ name: "bid", field_type: ... })` | mapped field, Passthrough | Passthrough |
+| `map.field("bid", #{ ..., converter: "pg-to-ch" })` | mapped field + converter | Plugin |
+| `map.exclude("debug_info")` | excluded field | Excluded |
+| `map.computed(#{ name: "wrt_ts", ..., props: #{ default: ... } })` | computed field | Computed |
 
-`ts_ms` из TopicRecord — не поле формата. Если нужен как колонка, скрипт добавляет
-его явно с `source: "ts_ms"`. Движок не добавляет его автоматически.
+`ts_ms` — поле source формата (proto, json и т.д.), а не системное поле движка.
+Скрипт маппит его явно с `map.field("ts_ms", ...)`. Движок не добавляет поля автоматически.
 
 ## Data Pipeline
 
-Schema Mapping определяет **структуру** (DDL, типы). Data Pipeline определяет
+Schema Mapping определяет **структуру** (DDL, типы, конвертеры). Data Pipeline определяет
 как **данные** трансформируются из source формата в target формат при каждой записи.
 
 Проблема: N source форматов × M target storage = N×M конвертеров.
 Решение: каноническое промежуточное представление `Row` — каждый format реализует
 `bytes → Row`, каждый storage реализует `Row → native write`. Итого N + M.
+Конвертеры — pluggable, подключаются по необходимости.
 
 ```
               StoragePlugin (весь flow внутри storage)
                         │
-  TopicRecord ──→ serializer.deserialize() ──→ Row
-                                                │
-                            engine::apply_mapping(row, schema) ──→ Row
-                                                                    │
-                                                        storage.write_native()
-                                                                    │
-                                                              native INSERT
+  TopicRecord ──→ serializer.deserialize() ──→ Row(Vec<Value>)
+                                                     │
+                      convert per field (MapSchema.fields, parallel) ──→ Vec<Value>
+                                                                           │
+                                                              storage.write_native()
+                                                                           │
+                                                                     native INSERT
 ```
 
-Storage получает `FormatSerializer` и `TargetSchema` через `StorageContext`.
+Storage получает `FormatSerializer` и `MapSchema` через `StorageContext`.
 Весь data pipeline происходит внутри storage:
-1. `serializer.deserialize(record.data)` → `Row`
-2. `engine::apply_mapping(row, schema)` → mapped `Row` (библиотечная функция движка)
-3. `write_native(row)` → native INSERT
+1. `serializer.deserialize(record.data)` → `Row(Vec<Value>)` — позиционный
+2. Конверсия per field по `mapping.fields` (параллельно):
+   - `Passthrough` → value as-is
+   - `Plugin(converter)` → `converter.convert(&value)`
+   - `Computed` / `Excluded` → skip
+3. `write_native(converted, mapping)` → native INSERT
 
-`apply_mapping` — utility-функция движка, не plugin. Механическая операция по TargetSchema:
-убирает лишние поля, переименовывает, переупорядочивает. Storage вызывает её сам.
+Нет отдельного `apply_mapping`. `MapSchema` IS the plan — маппинг, фильтрация,
+переименование, конвертеры — всё resolved при старте, data pipeline просто исполняет.
 
 ### Value — каноническое представление значения
 
@@ -1192,63 +1478,56 @@ pub enum Value<'a> {
 ### Row — каноническое представление записи
 
 ```rust
-pub struct RowField<'a> {
-    pub name: String,
-    pub value: Value<'a>,
-    pub source_type: FieldType,   // исходный тип — всегда сохранён
-}
-
-pub struct Row<'a> {
-    pub fields: Vec<RowField<'a>>,
-}
+/// Позиционный массив значений, порядок = source Schema.fields
+pub struct Row<'a>(pub Vec<Value<'a>>);
 ```
 
-`source_type` сохраняет полную информацию об исходном типе. Это позволяет:
-- Storage видит **три вещи** при записи: `value` (данные), `source_type` (откуда), `target_type` (куда, из TargetSchema)
-- Специализированный конвертер может оптимизировать hot path для конкретной пары source→target
-- Generic fallback всегда работает через `Value`
+Row максимально лёгкий — только значения, без имён и типов.
+Вся метаинформация (имена, типы, конвертеры) — в `MapSchema`, полученной при init().
+Каждый `FieldMap.source` (FieldRef) — `index` указывает на позицию в `Row.0`.
 
 `FormatSerializer.deserialize()` создаёт `Row` из байт,
-storage plugin потребляет `Row` для записи.
+storage plugin потребляет `Row` для записи через `MapSchema`.
 Они не знают друг о друге — `Row` мост между ними.
 
 ### Data Pipeline — шаги
 
+<details>
+<summary>Пример: 4 шага от bytes до INSERT</summary>
+
 ```
 1. storage читает TopicRecord(bytes) из Topic
 
-2. serializer.deserialize(bytes) → Row (каждое поле = value + source_type):
+2. serializer.deserialize(bytes) → Row(Vec<Value>) — позиционный (все поля source):
      Row [
-         { name: "symbol", value: String(Cow::Borrowed(...)),
-           source_type: { name: "string" } },
-         { name: "bid",    value: Decimal(12345678901, 8),
-           source_type: { name: "decimal", attrs: { precision: 18, scale: 8 } } },
-         { name: "ask",    value: Decimal(98765432100, 8),
-           source_type: { name: "decimal", attrs: { precision: 18, scale: 8 } } },
-         { name: "volume", value: Int64(1000),
-           source_type: { name: "int64" } },
+         String(Cow::Borrowed(...)),    // [0] symbol
+         Decimal(12345678901, 8),       // [1] bid
+         Decimal(98765432100, 8),       // [2] ask
+         Int64(1000),                   // [3] volume
+         String(Cow::Borrowed(...)),    // [4] internal_id
      ]
 
-3. storage вызывает engine::apply_mapping(row, TargetSchema):
-   - filter: убирает поля не в TargetSchema
-   - rename: source → column (symbol → sym)
-   - reorder: порядок как в TargetSchema
-   - source_type сохраняется при переименовании
-     Row [
-         { name: "sym",    value: String(Cow::Borrowed(...)),
-           source_type: { name: "string" } },
-         { name: "bid",    value: Decimal(12345678901, 8),
-           source_type: { name: "decimal", attrs: { precision: 18, scale: 8 } } },
-         ...
-     ]
+3. convert per field по MapSchema.fields (параллельно):
+     mapping.fields:
+       [0] source.index=0, target="sym",    Passthrough   → String as-is
+       [1] source.index=1, target="bid",    Plugin(pg→ch) → converter.convert(&value)
+       [2] source.index=2, target="ask",    Plugin(pg→ch) → converter.convert(&value)
+       [3] source.index=3, target="volume", Passthrough   → Int64 as-is
+       [4] source.index=4, "internal_id"    Excluded — skip
+       [5] source=None,    "wrt_ts"         Computed — skip, БД сама
 
-4. storage пишет Row → native (видит value + source_type + target_type):
-   - sym: source string → target LowCardinality(String) → generic: Cow.as_bytes()
-   - bid: source decimal(18,8) → target Decimal64(8) → specialized: прямая конверсия
-   - колонки с props (default, materialized) — не в Row, storage обрабатывает сам
+4. storage.write_native(converted_values, mapping):
+   — имена колонок из mapping.fields[].target.name
+   — computed (default, materialized) — пропускает, БД обрабатывает сам
+   → native INSERT
 ```
 
+</details>
+
 ### Пример: Postgres → ClickHouse через Row
+
+<details>
+<summary>Полный flow: pg binary → Row → convert → CH native INSERT</summary>
 
 ```
 Postgres source processor читает строку через pg driver.
@@ -1261,90 +1540,58 @@ serializer.deserialize(bytes):  // FormatSerializer для "pg-binary"
   — парсит pg wire format (big-endian, length-prefixed)
   — строки/bytes: Cow::Borrowed (ссылки в исходный буфер)
   — числа: eager parse (endian swap)
-  — source_type берётся из SourceSchema (serializer знает схему с момента создания)
        │
        ▼
   Row [
-    { name: "id",     value: Int64(123),
-      source_type: { name: "int8" } },
-    { name: "bid",    value: Decimal(12345678901, 8),
-      source_type: { name: "numeric", attrs: { precision: 18, scale: 8 } } },
-    { name: "symbol", value: String(Cow::Borrowed(&bytes[..])),
-      source_type: { name: "text" } },
-    { name: "tags",   value: Array([
-        String(Cow::Borrowed(&bytes[..])),        // zero-copy per element
-        String(Cow::Borrowed(&bytes[..])),
-      ]),
-      source_type: { name: "array", attrs: { element: "text" } } },
+    Int64(123),                          // [0] id
+    Decimal(12345678901, 8),             // [1] bid
+    String(Cow::Borrowed(&bytes[..])),   // [2] symbol
+    Array([String(Cow::Borrowed(..)), String(Cow::Borrowed(..))]),  // [3] tags
   ]
        │
        ▼
-  engine::apply_mapping(row, TargetSchema) — filter/rename/reorder
-  source_type сохраняется
+  convert per field (MapSchema.fields, parallel):
+    mapping.fields[0]: source.index=2 (symbol) → target "sym",  Passthrough
+    mapping.fields[1]: source.index=1 (bid)    → target "bid",  Plugin("pg-numeric-to-ch-decimal")
+    mapping.fields[2]: source.index=3 (tags)   → target "tags", Passthrough
+    mapping.fields[3]: source.index=0, "id"    Excluded — skip
+    mapping.fields[4]: source=None, "wrt_ts"   Computed — skip
        │
        ▼
-  Row [
-    { name: "sym",  value: String(Cow::Borrowed(...)),
-      source_type: { name: "text" } },
-    { name: "bid",  value: Decimal(12345678901, 8),
-      source_type: { name: "numeric", attrs: { precision: 18, scale: 8 } } },
-    { name: "tags", value: Array([...]),
-      source_type: { name: "array", attrs: { element: "text" } } },
+  Converted [
+    String(Cow::Borrowed(...)),          // sym — passthrough
+    Bytes(ch_decimal_bytes),             // bid — converter: pg numeric → CH Decimal64
+    Array([String(...), String(...)]),   // tags — passthrough
   ]
        │
        ▼
-ClickHouse storage.write(row, TargetSchema):
-  для каждого поля видит value + source_type + target_type (из TargetSchema):
-
-  sym:  source text → target LowCardinality(String)
-        → generic: Cow.as_bytes() → CH string encoding
-
-  bid:  source numeric(18,8) → target Decimal64(8)
-        → specialized: pg numeric → CH Decimal64 напрямую
-
-  tags: source array(text) → target Array(String)
-        → generic: поэлементно Cow.as_bytes() → CH offsets + packed strings
-
-  wrt_ts: нет в Row → DEFAULT now64(3), CH обрабатывает при INSERT
+  ClickHouse storage.write_native(converted, mapping):
+    sym:    CH string encoding
+    bid:    уже в CH Decimal64 формате — пишем напрямую
+    tags:   CH offsets + packed strings
+    wrt_ts: DEFAULT now64(3), CH обрабатывает при INSERT
        │
        ▼
   CH native INSERT
 ```
 
-### Специализированные конвертеры
+</details>
 
-Storage plugin при записи каждого поля имеет полный контекст:
-`value` (данные) + `source_type` (откуда) + `target_type` (куда, из TargetSchema).
+### Converter plugins vs runtime dispatch
 
-Specialized converters живут **внутри storage plugin**. Storage использует `source_type`
-как hint для оптимизации — это не зависимость от source format plugin.
-Storage не импортирует PG plugin, а просто проверяет строковое имя типа:
-
-```rust
-fn convert(field: &RowField, target: &TargetField) -> Vec<u8> {
-    // Specialized: storage знает свой target тип + использует source_type как hint
-    if field.source_type.name == "numeric" && target.field_type.name == "Decimal64" {
-        return pg_numeric_to_ch_decimal64(field, target);
-    }
-    if field.source_type.name == "uuid" && target.field_type.name == "UUID" {
-        // UUID: 16 bytes, одинаковый layout → zero-copy
-        return field.value.as_bytes().to_vec();
-    }
-
-    // Generic fallback: работает для любых типов через Value
-    generic_convert(&field.value, &target.field_type)
-}
-```
+Конвертеры — отдельные плагины (.so), подключаемые в `[[converters]]`.
+Resolved при старте, не при каждой записи. Storage не выбирает конвертер runtime —
+`MapSchema.fields[].converter` уже содержит нужный `Arc<dyn FieldConverter>`.
 
 | Стратегия | Когда | Пример |
 |-----------|-------|--------|
-| zero-copy | binary layout совпадает | UUID → UUID (16 bytes as-is) |
-| specialized | layout разный, но пара известна | pg numeric → CH Decimal64 |
-| generic | всё остальное | Value::Int64 → CH Int64 через generic |
+| Passthrough | типы совместимы | string → String, int64 → Int64 |
+| Plugin | wire format отличается | pg numeric → CH Decimal64 |
+| Computed | нет данных из Row | DEFAULT now64(3), MATERIALIZED expr |
+| Excluded | поле исключено из target | map.exclude("internal_id") — skip |
 
-Принцип: **generic всегда работает, specialized оптимизирует hot path**.
-Source_type в Row — metadata, не зависимость. Storage может его игнорировать
-(generic fallback) или использовать для оптимизации конкретных пар.
+Принцип: **passthrough по умолчанию, converter подключается явно в Rhai скрипте**.
+Engine не знает про типы — он только загружает плагины и связывает по имени.
 
 ### Lifetime: Row и TopicRecord
 
@@ -1355,9 +1602,9 @@ TopicRecord должен жить пока Row используется.
 
 ```rust
 fn process_record(&self, record: &TopicRecord) {
-    let row = self.serializer.deserialize(&record.data); // Row borrows record.data
-    let mapped = self.apply_mapping(row);                 // всё ещё borrows
-    self.write_native(mapped);                            // пишет в storage
+    let row = self.serializer.deserialize(&record.data);  // Row borrows record.data
+    let converted = self.convert(&row, &self.mapping);     // converter plugins
+    self.write_native(converted);                          // пишет в storage
     // row dropped, record.data свободен
 }
 ```
@@ -1371,11 +1618,11 @@ self.buffer.push(record);  // TopicRecord сохраняется
 // Фаза flush (по размеру буфера или таймеру)
 for record in &self.buffer {
     let row = self.serializer.deserialize(&record.data);
-    let mapped = self.apply_mapping(row);
-    // add() сразу извлекает данные из Row в native буфер (CH column buffers и т.д.)
+    let converted = self.convert(&row, &self.mapping);
+    // add() сразу извлекает данные в native буфер (CH column buffers и т.д.)
     // Row живёт только внутри одной итерации — Cow::Borrowed валиден,
     // т.к. record в self.buffer жив
-    self.batch_writer.add(&mapped);
+    self.batch_writer.add(&converted);
 }
 self.batch_writer.flush();  // batch INSERT — одна сетевая операция
 self.buffer.clear();        // TopicRecord-ы освобождаются
@@ -1404,13 +1651,15 @@ Storage может работать в двух режимах:
 ### Ключевые принципы Data Pipeline
 
 - **N + M вместо N × M**: каждый format реализует `bytes → Row`, каждый storage реализует `Row → write`
-- **source_type сохранён**: исходный тип не теряется, специализация source→target всегда возможна
+- **Converter plugins**: конвертеры — плагины (.so), resolved при старте, не runtime dispatch
+- **MapSchema IS the plan**: маппинг, фильтрация, конвертеры — всё resolved, data pipeline просто исполняет
+- **Row = Vec<Value>**: максимально лёгкий, без метаданных per record
+- **Параллельная конверсия**: каждое поле независимо, `par_iter()` по MapSchema.fields
 - **Cow для строк**: zero-copy когда возможно, copy когда нужно
 - **Eager для чисел**: стоимость парсинга ~0, binary layout между форматами несовместим
 - **Рекурсия для составных**: Array/Map/Tuple парсятся поэлементно, строковые элементы — Cow
 - **Lifetime**: Row<'a> живёт в scope обработки, TopicRecord буферизируется для batch
 - **Batching**: storage plugin решает, row-at-a-time или batch
-- **Schema Mapping = метаданные** (DDL, типы), **Data Pipeline = данные** (runtime, каждая запись)
 
 ## Table mode (пример storage-уровня)
 
@@ -1623,6 +1872,9 @@ Processor сам решает, когда перейти из одной фаз�
 `input` / `output` — объекты в `config` processor-а. Все свойства формата
 и framing указываются явно. Processor сам знает, с каким форматом работает.
 
+<details>
+<summary>Примеры конфигурации processor-ов (6 вариантов)</summary>
+
 ```toml
 # Source processor: transport → framing → topic
 [[processors]]
@@ -1687,6 +1939,8 @@ target = { topic = "quotes.raw" }
 config = { algo = "lz4" }
 # decompress не знает format — работает с raw bytes, input/output не нужны
 ```
+
+</details>
 
 Transform processor знает формат из **своего конфига** (`config.input` / `config.output`).
 Десериализация и сериализация — ответственность processor-а:
@@ -1785,6 +2039,9 @@ Source processor принимает TCP, topic хранит raw bytes, sink proc
 
 `config.input` / `config.output` указаны в processor-ах с явным framing. Topic не знает format.
 
+<details>
+<summary>Конфигурация + диаграмма</summary>
+
 ```toml
 [[formats]]
 name = "json"
@@ -1827,6 +2084,8 @@ quotes-gen  ──TCP:9100──►  [source: input.format=json, framing=newline
                                                                          TCP:9300  ──► клиенты
 ```
 
+</details>
+
 Данные: `{"symbol":"BTC","bid":50000}\n` — проходят как есть, никто не парсит.
 Topic не знает, что это JSON. Processor-ы знают format и framing из `config.input`/`config.output`.
 
@@ -1836,25 +2095,31 @@ Source processor принимает Protobuf (`config.input` с format + framing
 ClickHouse storage десериализует (`format` в `storage_config`) и раскладывает по колонкам.
 
 **Откуда берутся колонки?** Из Schema Mapping — `schema_map`
-определяет Rhai скрипт, движок строит `TargetSchema` при старте:
+определяет Rhai скрипт, движок строит `MapSchema` при старте:
 
-1. `storage_config.format = "proto-quote"` → движок резолвит format-плагин → получает `SourceSchema`
-2. `storage_config.schema` → движок строит начальный `TargetSchema { fields: [], attrs }`
-3. `storage_config.schema_map = "proto-quote-to-clickhouse"` → движок загружает Rhai скрипт
-4. Вызывает `map_schema(source, target)` → `TargetSchema` (fields заполнены)
-5. `StorageContext { serializer, schema }` → ClickHouse storage при `init()` берёт `schema` → `CREATE TABLE`
-6. При `save()` — десериализует данные через serializer, извлекает поля по `schema.fields[].source`
+1. Движок загружает `[[converters]]` → `HashMap<String, Arc<dyn FieldConverter>>`
+2. `storage_config.format = "proto-quote"` → движок резолвит format-плагин → получает `Schema` (source)
+3. `storage_config.schema` → движок строит начальную target `Schema { attrs }`
+4. `storage_config.schema_map = "proto-quote-to-clickhouse"` → движок загружает Rhai скрипт
+5. Вызывает `map_schema(source, target, map)` → map содержит правила трансформации
+6. Engine resolve → `MapSchema` (FieldMap[] с конвертерами + итоговая target Schema)
+7. `StorageContext { serializer, mapping }` → ClickHouse storage при `init()` берёт `mapping.target` → `CREATE TABLE`
+8. При `save()` — десериализует данные → `Row(Vec<Value>)`, конвертирует по `mapping.fields` → INSERT
+
+<details>
+<summary>Proto message + конфигурация + диаграмма Schema Mapping</summary>
 
 Protobuf message (исходник, из которого скомпилирован `quote.bin`):
 
 ```protobuf
-// schemas/quote.proto — в proto 5 полей
+// schemas/quote.proto — в proto 6 полей
 message Quote {
-    string symbol = 1;
-    double bid    = 2;
-    double ask    = 3;
-    int64  volume = 4;
-    string exchange = 5;
+    string symbol   = 1;
+    double bid      = 2;
+    double ask      = 3;
+    int64  volume   = 4;
+    int64  ts_ms    = 5;
+    string exchange = 6;
 }
 ```
 
@@ -1904,56 +2169,68 @@ TCP:9100  ──►  [source: input.format=proto-quote, framing=length_prefixed]
                Topic "quotes.structured"
                         │
                  Schema Mapping (при старте):
-                   format "proto-quote" → schema() → SourceSchema:
-                     symbol: { name: "string", attrs: {} }
-                     bid:    { name: "double", attrs: {} }
-                     ask:    { name: "double", attrs: {} }
-                     volume: { name: "int64",  attrs: {} }
+                   format "proto-quote" → schema() → Schema (source):
+                     symbol:   { name: "string", attrs: {} }
+                     bid:      { name: "double", attrs: {} }
+                     ask:      { name: "double", attrs: {} }
+                     volume:   { name: "int64",  attrs: {} }
+                     ts_ms:    { name: "int64",  attrs: {} }
                      exchange: { name: "string", attrs: {} }
                    │
-                   storage_config.schema → начальный TargetSchema:
-                     { fields: [], attrs: { table, engine, order_by, ttl } }
+                   storage_config.schema → начальная target Schema:
+                     { attrs: { table, engine, order_by, ttl } }
                    │
                    schema_map "proto-quote-to-clickhouse":
-                     map_schema(source, target) — Rhai скрипт:
-                       фильтрует (exchange пропущен)
-                       маппит типы (double → Float64, string → LowCardinality(String))
-                       добавляет extra (ts_ms, wrt_ts, spread)
+                     map_schema(source, target, map) — Rhai скрипт:
+                       map.exclude("exchange")
+                       map.field("ts_ms" → ts_ms, Int64)
+                       map.field("symbol" → sym, LowCardinality(String))
+                       map.field("bid" → bid, Float64)
+                       map.field("ask" → ask, Float64)
+                       map.field("volume" → volume, Int64)
+                       map.computed(wrt_ts, DateTime64(3), default: now64(3))
+                       map.computed(spread, Float64, materialized: ask - bid)
                    │
-                   → TargetSchema (fields заполнены, attrs сохранены)
+                   engine resolve → MapSchema:
+                     source: Schema (preserved)
+                     target: Schema (fields заполнены, attrs сохранены)
+                     fields: [FieldMap { source: FieldRef, target: Field, converter }...]
                    │
                  ClickHouse storage:
-                   init(ctx):  ctx.schema → render_type() → CREATE TABLE:
+                   init(ctx):  ctx.mapping.target → render DDL → CREATE TABLE:
                      │
                      → CREATE TABLE quotes (
-                         ts_ms  Int64,                            ← source="ts_ms"
-                         sym    LowCardinality(String),           ← source="symbol"
-                         bid    Float64,                          ← source="bid"
-                         ask    Float64,                          ← source="ask"
-                         wrt_ts DateTime64(3) DEFAULT now64(3),   ← extra (нет source)
-                         spread Float64 MATERIALIZED ask - bid    ← extra (нет source)
+                         ts_ms  Int64,
+                         sym    LowCardinality(String),
+                         bid    Float64,
+                         ask    Float64,
+                         volume Int64,
+                         wrt_ts DateTime64(3) DEFAULT now64(3),   ← computed
+                         spread Float64 MATERIALIZED ask - bid    ← computed
                        ) ENGINE = MergeTree()
                          ORDER BY (ts_ms)
                          TTL toDateTime(ts_ms / 1000) + INTERVAL 90 DAY
                    │
                    save(record):
-                     serializer.deserialize(record.data) → Row
-                     apply_mapping(row, schema) → mapped Row
+                     serializer.deserialize(record.data) → Row(Vec<Value>)
+                     convert per field (mapping.fields, parallel):
+                       ts_ms    = row[4] → Passthrough → Int64
+                       sym      = row[0] → Passthrough → String
+                       bid      = row[1] → Passthrough → Float64
+                       ask      = row[2] → Passthrough → Float64
+                       volume   = row[3] → Passthrough → Int64
+                       exchange = row[5] → Excluded — skip
+                       wrt_ts   — Computed (пропускает, DEFAULT заполнит)
+                       spread   — Computed (пропускает, MATERIALIZED вычислит)
                      │
-                     extract только fields с source:
-                       ts_ms  = record.ts_ms       (TopicRecord)
-                       sym    = data["symbol"]      (переименован скриптом)
-                       bid    = data["bid"]
-                       ask    = data["ask"]
-                       wrt_ts  — пропускается (DEFAULT заполнит)
-                       spread  — пропускается (MATERIALIZED вычислит)
-                     │
-                     INSERT INTO quotes (ts_ms, sym, bid, ask)
-                       VALUES (record.ts_ms, "BTC", 50000.0, 50001.0)
+                     INSERT INTO quotes (ts_ms, sym, bid, ask, volume)
+                       VALUES (1706000000000, "BTC", 50000.0, 50001.0, 12345)
 ```
 
+</details>
+
 Движок не знает о полях `symbol`, `bid`, `ask` — это знает только ClickHouse
-storage (через `TargetSchema` + `serializer` из StorageContext).
+storage (через `MapSchema` + `serializer` из StorageContext).
 Source processor знает format и framing из `config.input`. Topic не знает ничего.
 
 ### Пример 3: Fan-out с разными режимами
@@ -1961,6 +2238,8 @@ Source processor знает format и framing из `config.input`. Topic не з
 Один topic, два потребителя: один надёжный (offset + block), другой быстрый (latest).
 
 `storage_config.format` не нужен ни одному из трёх topic-ов — все storage хранят raw bytes.
+
+<details><summary>Конфигурация + диаграмма</summary>
 
 ```toml
 [[topics]]
@@ -2006,6 +2285,8 @@ Source ──► Topic "quotes.raw" (memory, 10K)
   (file, всё сохранено)     (memory, только актуальное)
 ```
 
+</details>
+
 `reliable-writer` читает offset — каждый фрейм по порядку, ничего не теряет.
 `realtime-writer` читает latest — если не успевает, пропущенные не нужны.
 
@@ -2016,6 +2297,8 @@ source processor (через `config.input`), потребители указы�
 
 Topic хранит таблицу актуальных значений per symbol. Потребители запрашивают
 snapshot или подписываются на изменения.
+
+<details><summary>Конфигурация + диаграмма</summary>
 
 ```toml
 [[formats]]
@@ -2066,12 +2349,16 @@ Consumer B (subscribe):
   → при каждом изменении получает полную таблицу
 ```
 
+</details>
+
 Topic не знает format. Storage знает (из `storage_config.format`).
 Source processor знает (из `config.input`). Каждый — из своего конфига.
 
 ### Пример 5: Цепочка обработки (Source → Processor → Storage)
 
 Сырые котировки проходят через OHLC-процессор, результат сохраняется в ClickHouse.
+
+<details><summary>Конфигурация + диаграмма</summary>
 
 ```toml
 [[formats]]
@@ -2082,6 +2369,10 @@ plugin = "./plugins/format/json.so"
 name = "avro-ohlc"
 plugin = "./plugins/format/avro.so"
 config = { schema_file = "schemas/ohlc.avsc" }
+
+[[schema_maps]]
+name = "avro-ohlc-to-clickhouse"
+script = "scripts/schema-map/avro-ohlc-to-clickhouse.rhai"
 
 # Topic 1: сырые котировки — storage не знает format
 [[topics]]
@@ -2124,7 +2415,8 @@ target = { topic = "ohlc.1m" }
 config = {
     input  = { format = "json" },
     output = { format = "avro-ohlc" },
-    intervals = ["1m", "5m", "1h"]
+    interval = "1m",
+    key_field = "symbol"
 }
 ```
 
@@ -2144,7 +2436,7 @@ TCP:9100 ──► [source: input.format=json, framing=newline] ──► Topic 
                                                           ▼
                                               Topic "ohlc.1m":
                                                 ClickHouse storage:
-                                                  init(): schema (из Schema Mapping Pipeline)
+                                                  init(): mapping (из Schema Mapping Pipeline)
                                                     → CREATE TABLE ohlc_1m (
                                                         ts_ms  Int64,
                                                         symbol String,
@@ -2154,20 +2446,27 @@ TCP:9100 ──► [source: input.format=json, framing=newline] ──► Topic 
                                                         close  Float64,
                                                         volume Int64
                                                       )
-                                                  save(): serializer.deserialize(avro)
-                                                    → extract по schema → INSERT
+                                                  save(): deserialize → convert (mapping.fields) → INSERT
                                                   read(): SELECT → serialize(avro) → bytes
 ```
+
+</details>
 
 ### Пример 6: Параллельная обработка с fan-out
 
 Один source, три независимых потребителя с разными storage и скоростями.
+
+<details><summary>Конфигурация + диаграмма</summary>
 
 ```toml
 [[formats]]
 name = "proto-quote"
 plugin = "./plugins/format/protobuf.so"
 config = { descriptor = "schemas/quote.bin", message = "Quote" }
+
+[[schema_maps]]
+name = "proto-quote-to-clickhouse"
+script = "scripts/schema-map/proto-to-clickhouse.rhai"
 
 # Входной topic — не знает format
 [[topics]]
@@ -2261,6 +2560,8 @@ TCP:9100 ──► Topic "quotes.raw" (memory, 100K)
    TCP:9300 → клиенты (актуальная таблица)
 ```
 
+</details>
+
 - `live-writer`: latest reader → `quotes.live` (table mode). Пропущенные промежуточные
   обновления не важны. Storage десериализует data, извлекает key по `key_field`, делает upsert.
 - `archive-writer`: offset reader → `quotes.archive` (file). Block при переполнении —
@@ -2274,6 +2575,8 @@ TCP:9100 ──► Topic "quotes.raw" (memory, 100K)
 Source присылает JSON. Один путь — raw хранение. Другой — конвертация в Avro
 через processor и сохранение в ClickHouse с колонками.
 
+<details><summary>Конфигурация + диаграмма</summary>
+
 ```toml
 [[formats]]
 name = "json"
@@ -2283,6 +2586,10 @@ plugin = "./plugins/format/json.so"
 name = "avro-quote"
 plugin = "./plugins/format/avro.so"
 config = { schema_file = "schemas/quote.avsc" }
+
+[[schema_maps]]
+name = "avro-quote-to-clickhouse"
+script = "scripts/schema-map/avro-quote-to-clickhouse.rhai"
 
 # Входной topic — не знает format
 [[topics]]
@@ -2354,17 +2661,21 @@ TCP:9100 ──► [source: input.format=json, framing=newline] ──► Topic 
                                                                      ▼
                                                                "quotes.avro"
                                                                ClickHouse storage:
-                                                               deserialize(Avro) → extract по schema → INSERT
+                                                               deserialize → convert (mapping.fields) → INSERT
 ```
+
+</details>
 
 `file-writer` — passthrough processor, просто перекладывает записи. Storage не знает format.
 Processor `json-to-avro` знает оба формата из своего конфига (`config.input`, `config.output`).
-ClickHouse знает format и schema_map из `storage_config` — Schema Mapping Pipeline строит TargetSchema при старте.
+ClickHouse знает format и schema_map из `storage_config` — Schema Mapping Pipeline строит MapSchema при старте.
 
 ### Пример 8: Минимальный raw pipe (два топика, zero-copy)
 
 Простейшая цепочка: данные проходят через два топика с разным framing.
 Framing указан явно в processor-ах — format не используется.
+
+<details><summary>Конфигурация + диаграмма</summary>
 
 ```toml
 # Raw топики без формата — framing нужно указать явно
@@ -2381,9 +2692,13 @@ storage_config = { storage_size = 1000, write_full = "block" }
 # Transform: перенарезка фреймов (100 байт → 10 байт)
 [[processors]]
 name = "reslicer"
-plugin = "./plugins/processor/passthrough.so"
+plugin = "./plugins/processor/frame-splitter.so"
 source = { topic = "raw.100", read = "offset" }
 target = { topic = "raw.10" }
+config = {
+    input  = { framing = "fixed_size", frame_size = 100 },
+    output = { framing = "fixed_size", frame_size = 10 }
+}
 
 # Source processor: raw bytes, только framing без format
 [[processors]]
@@ -2407,29 +2722,39 @@ config = {
 ```
 
 ```
-TCP:9100  ──►  [source: framing 100 bytes]  ──►  Topic "raw.100" (memory)
+TCP:9100  ──►  [source: framing 100 bytes]  ──►  Topic "raw.100" (memory, 100 records)
                                                         │
-                                                  [offset, block]
+                                                  [offset reader]
                                                         │
                                                         ▼
-                                                  Topic "raw.10":
-                                                   один фрейм 100 байт
-                                                   → 10 фреймов по 10 байт
+                                                  Processor "reslicer" (frame-splitter):
+                                                    input: 1 record × 100 байт
+                                                    output: 10 records × 10 байт
                                                         │
-                                                 [sink: framing 10 bytes]
-                                                │
-                                                ▼
-                                           TCP:9300 → клиенты
+                                                        ▼
+                                                  Topic "raw.10" (memory, 1000 records, block)
+                                                        │
+                                                  [offset reader]
+                                                        │
+                                                        ▼
+                                                  [sink: framing 10 bytes]
+                                                        │
+                                                        ▼
+                                                   TCP:9300 → клиенты
 ```
 
-Никакой десериализации. Данные — опак байты. Framing нарезает по-разному
-на каждом этапе. Processor-ы указывают framing явно — format не используется.
+</details>
+
+Никакой десериализации. Данные — опак байты. `frame-splitter` разбивает records
+на меньшие фрагменты. Processor-ы указывают framing явно — format не используется.
 
 ### Пример 9: Агрегация (OHLC) — stateful processor с ключом
 
 OHLC-агрегатор — stateful processor. Десериализует данные, группирует
 по ключу (symbol) и временному окну, накапливает state, при закрытии окна
 сериализует результат и публикует в target topic.
+
+<details><summary>Конфигурация + диаграмма</summary>
 
 ```toml
 [[formats]]
@@ -2440,6 +2765,10 @@ plugin = "./plugins/format/json.so"
 name = "avro-ohlc"
 plugin = "./plugins/format/avro.so"
 config = { schema_file = "schemas/ohlc.avsc" }
+
+[[schema_maps]]
+name = "avro-ohlc-to-clickhouse"
+script = "scripts/schema-map/avro-ohlc-to-clickhouse.rhai"
 
 # Входные котировки — storage не знает format
 [[topics]]
@@ -2516,8 +2845,10 @@ config = {
                                ▼
                         Topic "ohlc.1m":
                           ClickHouse storage:
-                          deserialize(avro) → extract по schema → INSERT
+                          deserialize → convert (mapping.fields) → INSERT
 ```
+
+</details>
 
 Processor — механизм агрегации. Ему нужны:
 - **input.format** — из `config.input`, для десериализации входных данных
@@ -2537,6 +2868,8 @@ Storage state topic-а знает `format = "json"` из `storage_config`.
 Topic `quotes.raw` — поток котировок (высокая частота).
 Topic `instruments` — справочник инструментов (table mode, редко меняется).
 Processor соединяет каждую котировку с метаданными инструмента.
+
+<details><summary>Конфигурация + диаграмма</summary>
 
 ```toml
 [[formats]]
@@ -2604,6 +2937,8 @@ Topic "quotes.raw"         Topic "instruments" (table mode)
 Topic "quotes.enriched"
 ```
 
+</details>
+
 Это **stream-table join** (аналог KStream-KTable join в Kafka Streams):
 - Поток (quotes) — offset reader, каждая запись обрабатывается
 - Таблица (instruments) — snapshot при init + subscribe на изменения
@@ -2614,6 +2949,8 @@ Topic "quotes.enriched"
 
 Два потока, join по ключу в пределах временного окна.
 Обе стороны буферизуются — processor держит два буфера.
+
+<details><summary>Конфигурация + диаграмма</summary>
 
 ```toml
 # Поток сделок — storage не знает format
@@ -2678,6 +3015,8 @@ Topic "trades"              Topic "orders"
 Topic "matched"
 ```
 
+</details>
+
 Синхронизация: processor подписан на оба topic-а, обрабатывает записи
 в порядке поступления (interleaving). Window определяет время жизни буфера.
 При каждой записи с любой стороны — lookup в буфере другой стороны.
@@ -2691,6 +3030,8 @@ Arrow IPC streaming имеет встроенный framing: continuation bytes 
 Для source/sink это `framing = "arrow_ipc_streaming"`.
 
 Arrow IPC file формат (с footer) используется storage напрямую — для записи .arrow файлов.
+
+<details><summary>Конфигурация + диаграмма</summary>
 
 ```toml
 [[formats]]
@@ -2767,6 +3108,8 @@ Topic "quotes.arrow" (memory, 10K records)
     └── [offset] ──► passthrough ──► Topic "quotes.arrow-archive"
                                      (file storage, arrow_ipc_file)
 ```
+
+</details>
 
 Source processor разбирает Arrow IPC stream на RecordBatch-и (каждый — один TopicRecord).
 Topic хранит RecordBatch-и как опак байты. Transform десериализует Arrow → сериализует JSON.
