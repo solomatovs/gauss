@@ -1,0 +1,11 @@
+[package]
+name = "gauss-api-server"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+gauss-api = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["net", "sync", "rt"] }
+axum = { version = "0.8", features = ["ws"] }

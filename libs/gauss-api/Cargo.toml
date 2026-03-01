@@ -1,0 +1,9 @@
+[package]
+name = "gauss-api"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+gauss-api-derive = { path = "../gauss-api-derive" }
+serde = { workspace = true }
+serde_json = { workspace = true }

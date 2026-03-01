@@ -1,520 +1,110 @@
-# quotes-server -- Руководство по разработке
+# Gauss — Руководство по разработке
 
-## Обзор
+## Принципы
 
-quotes-server -- workspace из нескольких проектов для работы с рыночными котировками и OHLC свечами в реальном времени:
+### 1. Никаких panic и unwrap в неожиданных местах
 
-- **quotes-server** -- микросервис: принимает котировки через плагины, рассчитывает свечи, сохраняет в storage-плагины, транслирует клиентам через REST API и WebSocket
-- **quotes-gen** -- генератор котировок: отправляет синтетические или файловые котировки через sink-плагины
-- **grafana-datasource** -- Grafana datasource плагин: HTTP REST клиент к quotes-server
+Процесс должен быть полностью подконтрольным. Все ошибки обрабатываются через `Result` и типизированные ошибки (`EngineError`, `PluginError`). Запрещены:
 
-Все проекты используют общий API крейт (`libs/api`) с типами и трейтами.
+- `unwrap()`, `expect()` в production-коде (допускается только в тестах)
+- `panic!()` вне случаев, когда это явный инвариант, который не может быть нарушен
+- неявные паники через индексацию (`vec[i]`) — использовать `.get()` с обработкой
 
-## Принципы архитектуры
+Любая ошибка должна подниматься наверх и логироваться, а не ронять процесс.
 
-### 1. Никаких внешних runtime-зависимостей
+#### Архитектура ошибок
 
-Финальный Docker-образ НЕ ДОЛЖЕН зависеть от `apk add` или любых внешних пакетов во время работы. Все необходимые библиотеки копируются в образ из стадии сборки:
-
-- Бинарник компилируется с `RUSTFLAGS="-C target-feature=-crt-static"` (динамическая линковка обязательна для `dlopen`)
-- `libgcc_s.so.1` копируется из builder-стадии через `COPY --from=builder`
-- Никаких других разделяемых библиотек не требуется
-
-**Правило:** если новая зависимость требует `.so` во время работы, копируйте её из builder-стадии. Никогда не добавляйте `apk add` в runtime-стадию.
-
-### 2. Трёхслойная плагинная архитектура
-
-Каждый источник/приёмник данных собирается из трёх плагинов-кубиков:
-
-**Inbound (quotes-server):**
-```
-Source (I/O)     →  Framing (границы сообщений)  →  Format (декодирование)
-     TCP              lines / length-prefixed          JSON / CSV / Protobuf
-  accept+read         read_frame(BufRead)              parse(&[u8]) → Quote
-```
-
-**Outbound (quotes-gen):**
-```
-Format (кодирование)  →  Framing (границы сообщений)  →  Sink (I/O)
-    JSON / CSV             lines / length-prefixed         TCP
-  serialize(Quote)         write_frame(Writer, &[u8])      send(&[u8])
-```
-
-Все плагины **двунаправленные**: Format имеет `parse()` + `serialize()`, Framing имеет `read_frame()` + `write_frame()`. Это позволяет использовать одни и те же плагины и для приёма, и для отправки.
-
-Это разделение позволяет свободно комбинировать плагины:
-- TCP + lines + JSON (текстовый протокол)
-- TCP + lines + CSV
-- TCP + length-prefixed + Protobuf (бинарный протокол)
-- TCP + length-prefixed + Avro
-- UDP + length-prefixed + MessagePack
-
-### 3. Storage backend'ы -- это плагины (.so)
-
-Storage backend'ы компилируются как **cdylib** крейты, создающие `.so` файлы. Основной бинарник загружает их во время работы через `libloading` (`dlopen`/`dlsym`). Это позволяет:
-
-- Добавлять новые backend'ы без модификации основного бинарника
-- Настраивать backend'ы через TOML конфиг файл
-- Включать/отключать backend'ы комментированием секций конфига
-
-**Правило:** логика хранения НЕ ДОЛЖНА компилироваться в основной бинарник. Все реализации хранилищ живут в отдельных крейтах с `crate-type = ["cdylib"]`.
-
-### 4. Общий API крейт
-
-Крейт `libs/api/` (`quotes-server-api`) определяет все общие типы и трейты: `OhlcStorage`, `QuoteSource`, `QuoteSink`, `QuoteFraming`, `QuoteFormat`. И бинарники, и все плагины зависят от него. Это контракт между хостом и плагинами.
-
-### 5. Конфигурация через TOML файл
-
-Все настройки в `config.toml`. Никаких переменных окружения для бизнес-конфигурации, никаких захардкоженных значений. CLI имеет только параметр `--config` (путь к файлу). По умолчанию: `config.toml`, переопределение через env: `CONFIG_PATH`.
-
-### 6. Composite/fan-out паттерн хранения
-
-Можно настроить несколько backend'ов одновременно. Один -- `primary` (чтение + запись), остальные -- `replicas` (только запись). Ошибки primary -- фатальные, ошибки реплик логируются, но не прерывают работу.
-
-### 7. Rust edition 2024
-
-Все крейты используют `edition = "2024"` (кроме grafana-datasource: `"2021"` из-за ограничений grafana-plugin-sdk). Это влияет на синтаксис FFI:
-```rust
-#[unsafe(no_mangle)]  // НЕ #[no_mangle]
-pub unsafe extern "C" fn qs_create_storage(...) -> StorageCreateResult { ... }
-```
-
-## Структура проекта
+Система ошибок двухуровневая — плагинный слой и слой движка:
 
 ```
-quotes-server/
-├── Cargo.toml                          # Workspace root (без [package])
-├── Cargo.lock
-├── config.toml                         # Конфигурация quotes-server по умолчанию
-│
-├── libs/
-│   └── api/                            # quotes-server-api (общий lib крейт)
-│       ├── Cargo.toml
-│       └── src/lib.rs                  # Типы, трейты, FFI типы
-│
-├── plugins/
-│   ├── source-tcp/                     # Source: TCP сервер (inbound)
-│   ├── sink-tcp/                       # Sink: TCP клиент (outbound)
-│   ├── framing-lines/                  # Framing: line-based (\n)
-│   ├── framing-length-prefixed/        # Framing: length-prefixed
-│   ├── format-json/                    # Format: JSON ↔ Quote
-│   ├── format-csv/                     # Format: CSV ↔ Quote (RFC 4180)
-│   ├── storage-file/                   # Storage: файловый backend
-│   └── storage-clickhouse/             # Storage: ClickHouse backend
-│       └── sql/create_ohlc.sql         # DDL таблицы
-│
-├── bins/
-│   ├── server/                         # quotes-server (основной бинарник)
-│   │   ├── Cargo.toml
-│   │   └── src/
-│   │       ├── main.rs                 # Точка входа
-│   │       ├── config.rs               # CLI аргументы + TOML конфиг
-│   │       ├── ohlc.rs                 # In-memory OHLC движок
-│   │       ├── api.rs                  # HTTP REST + WebSocket (axum)
-│   │       ├── plugin.rs               # Загрузчик плагинов
-│   │       ├── pipeline.rs             # Pipeline: source → framing → format → engine
-│   │       ├── raw_storage.rs          # Архивирование сырых котировок
-│   │       ├── storage/
-│   │       │   ├── mod.rs
-│   │       │   └── composite.rs        # Fan-out: primary + replicas
-│   │       └── cmd/
-│   │           ├── mod.rs
-│   │           └── serve.rs            # Оркестрация сервера
-│   │
-│   ├── quotes-gen/                     # quotes-gen (генератор котировок)
-│   │   ├── Cargo.toml
-│   │   ├── config.toml                 # Конфигурация генератора
-│   │   └── src/
-│   │       ├── main.rs
-│   │       ├── plugin.rs               # Загрузчик плагинов (Format, Framing, Sink)
-│   │       └── cmd/
-│   │           ├── mod.rs
-│   │           └── generate.rs         # Генерация + отправка котировок
-│   │
-│   └── grafana-datasource/             # Grafana datasource плагин
-│       ├── Cargo.toml
-│       ├── src/
-│       │   ├── main.rs
-│       │   └── plugin.rs               # DataService + DiagnosticsService
-│       ├── frontend/                   # TypeScript фронтенд
-│       │   ├── package.json
-│       │   ├── module.ts
-│       │   ├── datasource.ts
-│       │   ├── QueryEditor.tsx
-│       │   └── ConfigEditor.tsx
-│       └── build/
-│           ├── Dockerfile.build        # Docker сборка (Node.js + Rust)
-│           ├── docker-compose.yml
-│           └── out/                    # Артефакты сборки (gitignored)
-│
-├── build/
-│   ├── Dockerfile.build                # Docker сборка (server + gen + plugins)
-│   ├── docker-compose.yml
-│   └── out/                            # Артефакты сборки (gitignored)
-│
-├── docker-compose.yml                  # Продакшн деплой
-└── docs/
-    └── development-guide.md            # Этот файл
+Плагин (.so)                    Движок (gauss-engine)          main()
+        │                              │                          │
+   PluginError ──────────────► EngineError ──────────────► tracing::error / exit
+   (gauss-api)                   (#[from] PluginError)
 ```
 
-## Компоненты
+**`PluginError`** (`gauss-api/src/error.rs`) — единый тип ошибки для всех плагинных трейтов (`TopicStorage`, `Processor`, `FormatSerializer`, `FieldConverter`). Содержит `ErrorKind` + сообщение:
 
-### libs/api/ крейт (quotes-server-api)
+| ErrorKind | Когда использовать |
+|-----------|-------------------|
+| `Config` | Невалидный конфиг плагина, отсутствующие поля |
+| `Io` | Файловые, сетевые, системные ошибки |
+| `Format` | Ошибка сериализации/десериализации данных |
+| `Schema` | Несовместимость схем, отсутствие полей |
+| `Logic` | Нарушение инварианта внутри плагина (не инициализирован и т.п.) |
 
-Общая библиотека, используемая всеми бинарниками и плагинами.
+**`EngineError`** (`gauss-engine/src/error.rs`) — ошибки оркестрации. Оборачивает `PluginError` через `#[from]` для прозрачного проброса. Собственные варианты: `Config`, `TopicNotFound`, `UnsupportedReadMode`, `Io`.
 
-**Типы:**
-- `Quote` -- котировка (тик): `{symbol, bid, ask, ts_ms?}`. `ts_ms` опционально: если отсутствует, сервер подставляет текущее время. При сериализации `None` пропускается (`skip_serializing_if`).
-- `Candle` -- OHLC свеча: `{symbol, tf, ts_ms, open, high, low, close, volume}`. В JSON используются короткие имена полей: `ts`, `o`, `h`, `l`, `c`, `v`.
-- `CandleQuery` -- параметры запроса свечей: `{symbol, tf, from_ms?, to_ms?, limit?}`
-- `QuoteQuery` -- параметры запроса котировок: `{symbol, from_ms?, to_ms?, limit?}`
+**FFI-граница** — плагины, загруженные как .so, не могут возвращать Rust типы напрямую. Ошибка передаётся через `PluginCreateResult { plugin_ptr, error_ptr, error_len }`. Хост извлекает сообщение, освобождает память и конструирует `EngineError`.
 
-**Трейты:**
+**Автоматические конверсии** — `PluginError` реализует `From` для стандартных типов ошибок, что позволяет использовать `?` без `.map_err()`:
 
-```rust
-/// Storage backend (async, Send + Sync)
-pub trait OhlcStorage: Send + Sync {
-    fn init(&self) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send + '_>>;
-    fn save_candle(&self, candle: &Candle) -> ...;
-    fn save_candles(&self, candles: &[Candle]) -> ...;
-    fn query_candles(&self, query: &CandleQuery) -> ...;
-    fn flush(&self) -> ...;
-}
+| `From<T>` | → `ErrorKind` | Пример |
+|-----------|---------------|--------|
+| `std::io::Error` | `Io` | `File::open(path)?` |
+| `serde_json::Error` | `Format` | `serde_json::from_str(s)?` |
+| `std::str::Utf8Error` | `Format` | `std::str::from_utf8(bytes)?` |
+| `std::string::FromUtf8Error` | `Format` | `String::from_utf8(vec)?` |
 
-/// Source -- входящий источник данных (blocking I/O, inbound)
-pub trait QuoteSource: Send {
-    fn start(&mut self, framing: Arc<dyn QuoteFraming>) -> Result<(), String>;
-    fn recv(&mut self) -> Result<Option<Vec<u8>>, String>;
-    fn stop(&mut self) -> Result<(), String>;
-}
+**Правила:**
 
-/// Sink -- исходящий приёмник данных (blocking I/O, outbound)
-pub trait QuoteSink: Send {
-    fn start(&mut self) -> Result<(), String>;
-    fn send(&mut self, data: &[u8]) -> Result<(), String>;
-    fn stop(&mut self) -> Result<(), String>;
-}
+- Плагины возвращают `Result<_, PluginError>` — никогда не паникуют
+- Движок конвертирует `PluginError` → `EngineError` автоматически через `?`
+- `main()` логирует финальную ошибку и завершает процесс с ненулевым кодом
+- **Никаких `Result<_, String>`** — всегда типизированные ошибки (`PluginError`, `EngineError`). Строковые ошибки не дают вызывающему коду возможности различать категории и принимать решения (retry, skip, fail)
+- **Никаких `From<String>` / `From<&str>`** для типов ошибок — конверсия из голой строки скрывает категорию. Используйте явные конструкторы: `PluginError::config("...")`, `PluginError::io("...")`
+- **Каждый уровень — свой тип** — плагины используют `PluginError`, движок — `EngineError`. Не пробрасывайте чужой тип ошибки напрямую, оборачивайте через `#[from]` или явный вариант enum
+- **Добавляйте контекст при пересечении границ** — при вызове `?` через границу (плагин → движок, хелпер → оркестратор) используйте `.map_err(|e| e.with_context("что именно делали"))`. Метод `.with_context()` есть на обоих типах — он дописывает контекст к сообщению, сохраняя `ErrorKind`. Без контекста ошибка `"Io: permission denied"` не даёт понять, где она произошла; с контекстом — `"topic 'input': Io: permission denied"`
 
-/// Framing -- границы сообщений в потоке байтов (stateless, Send + Sync)
-pub trait QuoteFraming: Send + Sync {
-    fn read_frame(&self, reader: &mut dyn BufRead) -> Result<Option<Vec<u8>>, String>;
-    fn write_frame(&self, writer: &mut dyn Write, data: &[u8]) -> Result<(), String>;
-}
+### 2. Полностью плагинная архитектура — без builtin-плагинов
 
-/// Format -- кодирование/декодирование Quote (stateless, Send + Sync)
-pub trait QuoteFormat: Send + Sync {
-    fn parse(&self, data: &[u8]) -> Result<Quote, String>;
-    fn serialize(&self, quote: &Quote) -> Result<Vec<u8>, String>;
-}
-```
+Центральный API (`gauss-api`) определяет абстрактные трейты: `TopicStorage`, `Processor`, `FormatSerializer`, `FieldConverter`. Весь конкретный функционал живёт в плагинах, которые реализуют эти трейты.
 
-**Паттерн double-boxing:** `Box<dyn Trait>` -- fat pointer (2 слова), который нельзя передать через `*mut ()`. Оборачиваем: `Box::into_raw(Box::new(storage))` создаёт thin pointer. На стороне хоста: `*Box::from_raw(ptr as *mut Box<dyn Trait>)` восстанавливает trait object. Это безопасно, т.к. хост и плагины компилируются вместе в одном workspace одним компилятором.
-
-### Загрузчик плагинов
-
-Каждый бинарник имеет свой `plugin.rs` с обёртками для нужных типов плагинов:
-
-**quotes-server** (`bins/server/src/plugin.rs`): `PluginStorage`, `PluginSource`, `PluginFraming`, `PluginFormat`
-
-**quotes-gen** (`bins/quotes-gen/src/plugin.rs`): `PluginSink`, `PluginFraming`, `PluginFormat`
-
-Каждая обёртка:
-- Загружает `.so` через `libloading::Library`
-- Вызывает `qs_create_{type}(config_json_ptr, len)` для создания экземпляра
-- Хранит `inner: Option<Box<dyn Trait>>` и `_lib: Library`
-- Реализует соответствующий трейт делегированием в `inner`
-
-**Порядок Drop критически важен:** `inner` использует vtable из `_lib`, поэтому `inner` должен быть уничтожен первым. Кастомный `Drop` impl вызывает `self.inner.take()` до автоматического уничтожения `_lib`.
-
-### Pipeline (bins/server/src/pipeline.rs)
-
-Связывает три плагина в цепочку обработки:
-
-1. `source.start(framing)` -- запуск source с framing
-2. Blocking thread: `source.recv()` → `mpsc::channel` → async task
-3. Async task: `format.parse(&data)` → `Quote` → `OhlcEngine` → storage + broadcast
-
-### SinkPipeline (bins/quotes-gen)
-
-Связывает три плагина в обратную цепочку:
-
-1. `format.serialize(&quote)` → `Vec<u8>`
-2. `framing.write_frame(&mut buf, &data)` → добавляет framing
-3. `sink.send(&buf)` → отправляет
-
-При ошибке отправки выполняется автоматический реконнект: `sink.start()` + повторная отправка.
-
-### OHLC движок (bins/server/src/ohlc.rs)
-
-In-memory конечный автомат. Для каждой входящей `Quote` обновляет свечи по всем настроенным таймфреймам.
-
-- Ключ: `(symbol, tf_name)` -> текущая `Candle`
-- Начало окна: `ts_ms - (ts_ms % interval_ms)`
-- Окно сменилось: сброс свечи (новый open/high/low/close из bid, volume=1)
-- То же окно: обновление high/low/close, инкремент volume
-- Для значений свечи используется цена `bid`
-
-### HTTP/WebSocket API (bins/server/src/api.rs)
-
-Axum сервер на `api_port` (по умолчанию 9200).
-
-**REST эндпоинт:**
-```
-GET /api/candles?symbol=EURUSD&tf=1m&from=<ms>&to=<ms>&limit=100
-```
-
-**WebSocket эндпоинт:**
-```
-WS /ws
-```
-Сообщения от клиента:
-```json
-{"action": "subscribe", "symbol": "EURUSD", "tf": "1m", "history": 100}
-{"action": "unsubscribe", "symbol": "EURUSD", "tf": "1m"}
-```
-
-### grafana-datasource (bins/grafana-datasource/)
-
-Grafana backend-плагин. Использует `Candle` и `Quote` из `quotes-server-api` для десериализации REST-ответов quotes-server. Поддерживает два типа запросов:
-
-- **candles** (по умолчанию): `GET /api/candles?symbol=...&tf=...&from=...&to=...`
-- **quotes**: `GET /api/quotes?symbol=...&from=...&to=...`
-
-## Plugin FFI протокол
-
-Каждый тип плагина экспортирует два C ABI символа:
-
-| Тип плагина | Создание | Уничтожение |
-|-------------|----------|-------------|
-| Storage | `qs_create_storage` | `qs_destroy_storage` |
-| Source | `qs_create_source` | `qs_destroy_source` |
-| Sink | `qs_create_sink` | `qs_destroy_sink` |
-| Framing | `qs_create_framing` | `qs_destroy_framing` |
-| Format | `qs_create_format` | `qs_destroy_format` |
-
-Сигнатура создания одинакова для всех:
-```rust
-pub unsafe extern "C" fn qs_create_{type}(
-    config_json_ptr: *const u8,
-    config_json_len: usize,
-) -> {Type}CreateResult;
-```
-
-`{Type}CreateResult` -- структура `#[repr(C)]` с полями `{type}_ptr` и `error_ptr`.
-
-### Создание нового плагина
-
-1. Создать крейт в `plugins/{type}-{name}/`
-2. `Cargo.toml`:
-   ```toml
-   [package]
-   name = "quotes-{type}-{name}"
-   version = "0.1.0"
-   edition = "2024"
-
-   [lib]
-   crate-type = ["cdylib"]
-
-   [dependencies]
-   quotes-server-api = { path = "../../libs/api" }
-   serde = { version = "1", features = ["derive"] }
-   serde_json = "1"
-   ```
-3. Реализовать соответствующий трейт. Пример для framing:
-   ```rust
-   use quotes_server_api::{framing_ok, FramingCreateResult, QuoteFraming};
-
-   pub struct MyFraming { /* config fields */ }
-
-   impl QuoteFraming for MyFraming {
-       fn read_frame(&self, reader: &mut dyn std::io::BufRead) -> Result<Option<Vec<u8>>, String> {
-           // Прочитать один фрейм из reader. None = EOF.
-       }
-       fn write_frame(&self, writer: &mut dyn std::io::Write, data: &[u8]) -> Result<(), String> {
-           // Записать данные + разделитель/заголовок длины.
-       }
-   }
-
-   #[unsafe(no_mangle)]
-   pub unsafe extern "C" fn qs_create_framing(
-       config_json_ptr: *const u8, config_json_len: usize,
-   ) -> FramingCreateResult {
-       // Парсинг конфига, создание экземпляра
-       framing_ok(Box::new(MyFraming { /* ... */ }))
-   }
-
-   #[unsafe(no_mangle)]
-   pub unsafe extern "C" fn qs_destroy_framing(framing_ptr: *mut ()) {
-       if !framing_ptr.is_null() {
-           let _ = unsafe { Box::from_raw(framing_ptr as *mut Box<dyn QuoteFraming>) };
-       }
-   }
-   ```
-4. Добавить крейт в `[workspace] members` в корневом `Cargo.toml`
-5. Добавить COPY и cp в `build/Dockerfile.build`
-
-### Поток конфигурации плагина
-
-Секция `[sources.framing_config]` в `config.toml` (TOML) → сериализация в JSON строку → передача как `(ptr, len)` в `qs_create_framing` → плагин десериализует JSON в свою структуру конфига.
-
-## Справочник конфигурации
-
-### quotes-server (config.toml)
+- Ядро (`gauss-engine`) не содержит бизнес-логики — только оркестрация
+- Любой плагин можно заменить на другой с тем же трейтом без изменения ядра
+- Плагины изолированы друг от друга и взаимодействуют только через API трейты
+- **Нет builtin-плагинов** — движок не зависит ни от одного плагинного крейта напрямую. Все плагины загружаются как `.so` через FFI (`dlopen`/`dlsym`). В конфиге указываются пути к `.so` файлам, не строковые алиасы:
 
 ```toml
-# Порт HTTP + WebSocket API
-api_port = 9200
+# Правильно — путь к .so:
+storage = "./plugins/libgauss_storage_memory.so"
+plugin = "./plugins/libgauss_processor_passthrough.so"
 
-# Таймфреймы OHLC для расчёта
-timeframes = ["1s", "1m", "5m", "15m", "30m", "1h", "4h", "1d", "1w", "1y"]
-
-# Директория для архива сырых котировок (JSONL файлы по дням)
-raw_data_dir = "./data/raw"
-
-# --- Sources (source + framing + format) ---
-[[sources]]
-name = "tcp-json"
-source = "/app/plugins/libquotes_source_tcp.so"
-framing = "/app/plugins/libquotes_framing_lines.so"
-format = "/app/plugins/libquotes_format_json.so"
-[sources.source_config]
-port = 9100
-
-# --- Storage backends ---
-[[backends]]
-plugin = "/app/plugins/libquotes_storage_file.so"
-primary = true
-[backends.config]
-data_dir = "./data"
+# Неправильно — нет builtin алиасов:
+# storage = "memory"
+# plugin = "builtin:passthrough"
 ```
 
-### quotes-gen (bins/quotes-gen/config.toml)
+- Плагинные крейты используют `crate-type = ["rlib", "cdylib"]` — `cdylib` для .so загрузки движком, `rlib` для собственных unit/integration тестов
 
-```toml
-rate = 10
-# seed = 42
-# symbol = "EURUSD"
-# history = true
+### 3. ABI-версионирование плагинов
 
-[[sinks]]
-name = "tcp-json"
-sink = "/app/plugins/libquotes_sink_tcp.so"
-framing = "/app/plugins/libquotes_framing_lines.so"
-format = "/app/plugins/libquotes_format_json.so"
-[sinks.sink_config]
-host = "quotes-server"
-port = 9100
-```
+Каждый плагин (.so) экспортирует функцию проверки ABI-версии. При загрузке хост проверяет совместимость. Несовместимый плагин не загружается, а возвращает понятную ошибку.
 
-**Правила quotes-server:**
-- Каждый source обязан указать `source`, `framing` и `format`
-- Ровно один backend должен иметь `primary = true`
-- Минимум один backend и один source обязательны
+- Версия ABI определяется в `gauss-api` и инкрементируется при breaking changes трейтов
+- Плагин экспортирует `gauss_abi_version() -> u32`
+- Хост проверяет: `plugin_abi == host_abi`, иначе отказ с сообщением о несовместимости
 
-**Правила quotes-gen:**
-- Каждый sink обязан указать `sink`, `framing` и `format`
-- Минимум один sink обязателен
+### 4. Полностью статическая компиляция
 
-## Существующие плагины
+Все итоговые бинарные файлы компилируются статически. Никаких зависимостей от glibc, libssl и прочих системных библиотек в runtime.
 
-| Плагин | Тип | Конфигурация |
-|--------|-----|-------------|
-| `libquotes_source_tcp.so` | Source | `port` -- TCP порт |
-| `libquotes_sink_tcp.so` | Sink | `host`, `port` -- адрес TCP сервера |
-| `libquotes_framing_lines.so` | Framing | `max_length` -- макс. длина строки (0 = без лимита) |
-| `libquotes_framing_length_prefixed.so` | Framing | `length_bytes` (1/2/4), `byte_order` (big/little), `max_payload` |
-| `libquotes_format_json.so` | Format | (без конфигурации) |
-| `libquotes_format_csv.so` | Format | `delimiter`, `quoting` (bool), `header` (absent/present) |
-| `libquotes_storage_file.so` | Storage | `data_dir` |
-| `libquotes_storage_clickhouse.so` | Storage | `host`, `port`, `user`, `password`, `database`, `table` |
+- Target: `x86_64-unknown-linux-musl` (или аналогичный static target)
+- TLS: `rustls` вместо OpenSSL
+- Итоговый контейнер может быть `FROM scratch` или `FROM alpine` без дополнительных пакетов
 
-## Поток данных
+### 5. Тесты в отдельной директории
+
+Тесты не пишутся inline (`#[cfg(test)] mod tests`) в файлах с кодом. Вместо этого каждый крейт имеет директорию `tests/` на уровне `src/`, где тесты организованы по файлам:
 
 ```
-quotes-gen                              quotes-server
-==========                              =============
-
-Symbol.tick() → Quote                   Source Plugin (blocking thread)
-    │                                       │ accept connections, read bytes
-    v                                       v
-Format Plugin                           Framing Plugin (per-connection)
-    │ serialize(Quote) → Vec<u8>            │ read_frame(BufReader) → Vec<u8>
-    v                                       v
-Framing Plugin                          mpsc::channel → async pipeline
-    │ write_frame(buf, data)                │
-    v                                       v
-Sink Plugin                             Format Plugin
-    │ send(buf) → TCP                       │ parse(&[u8]) → Quote
-    │                                       v
-    │              TCP                  RawStorage → ./data/raw/{date}.jsonl
-    └──────────────────────►                │
-                                            v
-                                        OhlcEngine (in-memory)
-                                            │ process_tick → Vec<Candle>
-                                            │
-                                            ├── CompositeStorage
-                                            │     ├── Primary (FileStorage)
-                                            │     └── Replica (ClickHouse)
-                                            │
-                                            └── broadcast::channel<Candle>
-                                                    │
-                                                    ├── WS /ws
-                                                    └── REST /api/candles
-                                                            │
-                                                    grafana-datasource
-                                                    ==================
-                                                    HTTP GET → Candle/Quote
-                                                    → Grafana DataFrame
+my-crate/
+├── Cargo.toml
+├── src/
+│   └── lib.rs
+└── tests/
+    ├── feature_a.rs
+    └── feature_b.rs
 ```
 
-## Docker сборка
-
-### quotes-server + quotes-gen + plugins
-
-```bash
-docker compose -f build/docker-compose.yml build
-```
-
-Результат:
-- `/app/quotes-server-linux-amd64` -- бинарник сервера
-- `/app/quotes-gen-linux-amd64` -- бинарник генератора
-- `/app/plugins/libquotes_*.so` -- все плагины
-- `/app/config.toml` -- конфигурация по умолчанию
-
-### grafana-datasource
-
-```bash
-docker compose -f bins/grafana-datasource/build/docker-compose.yml build
-```
-
-Отдельная сборка: фронтенд (Node.js + webpack) + бэкенд (Rust) → готовый Grafana плагин.
-
-## Тестирование
-
-```bash
-# Отправка тестовой котировки (TCP + lines + JSON)
-echo '{"symbol":"EURUSD","bid":1.08512,"ask":1.08532}' | nc localhost 9100
-
-# Запрос свечей
-curl 'http://localhost:9200/api/candles?symbol=EURUSD&tf=1s'
-
-# WebSocket (через websocat или аналог)
-echo '{"action":"subscribe","symbol":"EURUSD","tf":"1s","history":10}' | websocat ws://localhost:9200/ws
-
-# Запуск генератора (5 котировок в секунду)
-./quotes-gen --config bins/quotes-gen/config.toml --rate 5
-```
-
-## Основные зависимости
-
-| Крейт | Бинарник | Назначение |
-|-------|----------|-----------|
-| `tokio` | server, gen | Асинхронный runtime (многопоточный) |
-| `axum` | server | HTTP + WebSocket сервер |
-| `clap` | server, gen | Парсинг CLI аргументов |
-| `serde` / `serde_json` | все | Сериализация |
-| `toml` | server, gen | Парсинг конфиг файла |
-| `libloading` | server, gen | Динамическая загрузка .so плагинов |
-| `reqwest` | clickhouse, grafana | HTTP клиент (с `rustls-tls`) |
-| `grafana-plugin-sdk` | grafana | Grafana backend plugin SDK |
-| `chrono` | grafana | Работа с timestamps |
+Cargo автоматически компилирует каждый файл из `tests/` как отдельный integration test binary.

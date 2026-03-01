@@ -1,0 +1,3 @@
+# Ignore everything in old/ — archived code
+*
+!.gitignore

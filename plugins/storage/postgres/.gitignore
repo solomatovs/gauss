@@ -1,0 +1,3 @@
+# Local Postgres data
+pg-data/
+tests/output/

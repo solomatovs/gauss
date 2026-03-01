@@ -1,0 +1,2 @@
+# Macro expansion debug output
+*.expanded.rs

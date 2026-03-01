@@ -4,18 +4,48 @@
         {
             "type": "lldb",
             "request": "launch",
-            "name": "Debug Server",
+            "name": "Debug Unit Tests (current package)",
             "cargo": {
-                "args": ["build", "-p", "gauss-server"],
+                "args": ["test", "--no-run", "--lib", "--package=${command:currentPackageName}"],
+                "filter": {
+                    "name": "${command:currentPackageName}",
+                    "kind": "lib"
+                }
+            },
+            "args": ["--nocapture"],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug Integration Test (current file)",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--no-run",
+                    "--package=${command:currentPackageName}",
+                    "--test=${fileBasenameNoExtension}"
+                ],
+                "filter": {
+                    "name": "${fileBasenameNoExtension}",
+                    "kind": "test"
+                }
+            },
+            "args": ["--nocapture"],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug gauss-server",
+            "cargo": {
+                "args": ["build", "--bin=gauss-server"],
                 "filter": {
                     "name": "gauss-server",
                     "kind": "bin"
                 }
             },
-            "env": {
-                "RUST_LOG": "debug"
-            },
-            "args": ["serve", "--config", "config.debug.toml"],
+            "args": ["--config", "config.toml"],
             "cwd": "${workspaceFolder}"
         }
     ]

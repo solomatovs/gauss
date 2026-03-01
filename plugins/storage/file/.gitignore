@@ -1,0 +1,5 @@
+# Storage data files
+*.dat
+*.bin
+storage/
+tests/output/

@@ -1,0 +1,10 @@
+[package]
+name = "gauss-converter-ch-to-wire"
+edition.workspace = true
+version.workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+gauss-api = { workspace = true }

@@ -1,0 +1,4 @@
+# Generated protobuf code
+src/generated/
+*.desc
+tests/output/

@@ -1,14 +1,11 @@
 [package]
-name = "codec-avro"
-version = "0.1.0"
-edition = "2024"
+name = "gauss-format-avro"
+edition.workspace = true
+version.workspace = true
 
 [lib]
-name = "codec_avro"
 crate-type = ["cdylib"]
 
 [dependencies]
-server-api = { path = "../../../libs/api" }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-apache-avro = "0.17"
+gauss-api = { workspace = true }
+serde = { workspace = true }

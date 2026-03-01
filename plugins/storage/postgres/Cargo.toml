@@ -1,0 +1,13 @@
+[package]
+name = "gauss-storage-postgres"
+edition.workspace = true
+version.workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+gauss-api = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["net", "sync"] }

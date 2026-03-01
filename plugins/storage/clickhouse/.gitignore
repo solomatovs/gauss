@@ -1,0 +1,3 @@
+# Local ClickHouse data
+ch-data/
+tests/output/

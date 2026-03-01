@@ -1,9 +1,6 @@
-# Rust
-target/
-Cargo.lock
-
-# Data
-data/
+# OS
+.DS_Store
+Thumbs.db
 
 # IDE
 .idea/
@@ -12,13 +9,18 @@ data/
 *.swo
 *~
 
-# OS
-.DS_Store
-Thumbs.db
-
 # Environment
 .env
 .env.*
 
-# Generated
-*.dot
+# Logs
+*.log
+
+# Temporary
+*.tmp
+
+# Rust build output (workspace-wide)
+target/
+
+# Runtime data
+data/

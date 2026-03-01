@@ -2014,18 +2014,75 @@ Storage указывает format в `storage_config.format` для десери
 
 ### FFI модель
 
+Каждый плагин (.so) экспортирует 4 символа:
+
+| Символ | Сигнатура | Назначение |
+|--------|-----------|------------|
+| `qs_abi_version` | `fn() → u32` | Версия ABI (текущая: 2) |
+| `qs_config_params` | `fn() → *mut ()` | Декларация параметров (`Vec<ConfigParam>`) |
+| `qs_create_*` | `fn(*const ()) → PluginCreateResult` | Создание плагина (получает `&ConfigValues`) |
+| `qs_destroy_*` | `fn(*mut ())` | Освобождение плагина |
+
+`*` зависит от типа: `qs_create_storage`, `qs_create_processor`, `qs_create_format`, `qs_create_converter`.
+
+#### Поток конфигурации (startup)
+
 ```
-Host (server)                    Plugin (.so)
-─────────────                    ────────────
-dlopen(plugin.so)
-dlsym("qs_abi_version")  ──→    fn qs_abi_version() → u32
-    version check
-dlsym("qs_create_*")     ──→    fn qs_create_*(ptr, len) → PluginCreateResult
-    передаём config JSON          парсит config, создаёт Box<dyn Trait>
-    получаем *mut ()       ←──    возвращает pointer
-unsafe Box::from_raw
-    → Box<dyn Trait>
-                          ──→    fn qs_destroy_*(ptr)   Drop
+Host (engine)                           Plugin (.so)
+─────────────                           ────────────
+1. dlopen(plugin.so)
+2. qs_abi_version() → проверка          fn qs_abi_version() → 2
+
+3. qs_config_params() → Vec<ConfigParam>
+   плагин декларирует:                  fn qs_config_params() → *mut ()
+   - имя, тип (Bool/I64/U64/F64/Str)     возвращает Vec<ConfigParam>
+   - контекст (Postmaster/Sighup)
+   - required, default, description
+
+4. Engine валидирует TOML config
+   vs ConfigParam деклараций:
+   - тип совпадает?
+   - required параметры присутствуют?
+   - defaults для отсутствующих?
+   → ConfigValues (типизированные пары)
+
+5. qs_create_*(&config_values)          fn qs_create_*(ptr) → PluginCreateResult
+   передаём &ConfigValues                читает через config.get_u64(), get_str(), ...
+   получаем *mut ()              ←──     создаёт Box<dyn Trait>, возвращает pointer
+   unsafe Box::from_raw
+   → Box<dyn Trait>
+
+6. (shutdown)
+   qs_destroy_*(ptr)             ──→    fn qs_destroy_*(ptr)   Drop
+```
+
+#### ConfigParam
+
+Плагин **не знает** о формате конфигурации (TOML, YAML, env, ...).
+Плагин декларирует **что ему нужно** через `ConfigParam`, движок **доставляет** через `ConfigValues`.
+
+```rust
+pub struct ConfigParam {
+    pub name: String,           // "storage_size"
+    pub param_type: ParamType,  // U64
+    pub context: ParamContext,  // Postmaster (только при старте) / Sighup (hot-reload)
+    pub required: bool,
+    pub default: Option<ParamValue>,
+    pub description: String,
+}
+```
+
+Движок вызывает `config.get_u64("storage_size")`, `config.get_str("write_full")` и т.д. — типизированный доступ без парсинга.
+
+#### Макросы для плагинов
+
+```rust
+// Все плагины:
+gauss_api::qs_abi_version_fn!();
+gauss_api::qs_config_params_fn!([
+    ConfigParam { name: "size".into(), param_type: ParamType::U64, ... },
+]);
+gauss_api::qs_destroy_fn!(qs_destroy_storage, gauss_api::storage::TopicStorage);
 ```
 
 ---

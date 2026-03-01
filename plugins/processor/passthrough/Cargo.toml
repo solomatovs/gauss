@@ -1,0 +1,10 @@
+[package]
+name = "gauss-processor-passthrough"
+edition.workspace = true
+version.workspace = true
+
+[lib]
+crate-type = ["rlib", "cdylib"]
+
+[dependencies]
+gauss-api = { workspace = true }

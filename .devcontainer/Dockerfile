@@ -1,18 +1,23 @@
-FROM rust:1.88-alpine
+FROM rust:1.88-slim-bookworm
 
-RUN apk update && apk add --no-cache \
-    musl-dev \
+RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     bash \
     curl \
-    protobuf-dev \
+    protobuf-compiler \
     nodejs \
     npm \
+    locales \
+    musl-tools \
     make net-tools tcpdump binutils netcat-openbsd htop \
- && rustup component add clippy rustfmt
+ && sed -i 's/# ru_RU.UTF-8 UTF-8/ru_RU.UTF-8 UTF-8/' /etc/locale.gen \
+ && locale-gen \
+ && rm -rf /var/lib/apt/lists/* \
+ && rustup component add clippy rustfmt \
+ && rustup target add x86_64-unknown-linux-musl
 
-# Dynamic linking for cdylib plugins
-ENV RUSTFLAGS="-C target-feature=-crt-static"
+ENV LANG=ru_RU.UTF-8
+ENV LC_ALL=ru_RU.UTF-8
 
 # Install cargo-watch for dev workflow
 RUN cargo install cargo-watch

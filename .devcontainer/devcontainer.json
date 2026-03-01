@@ -31,6 +31,10 @@
   "mounts": [
     "type=volume,source=claude-code-data,target=/root/.claude"
   ],
+  "containerEnv": {
+    "LANG": "ru_RU.UTF-8",
+    "LC_ALL": "ru_RU.UTF-8"
+  },
   // "postCreateCommand": "",
   "remoteUser": "root"
 }

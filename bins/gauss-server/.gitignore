@@ -1,0 +1,6 @@
+# Binary output
+gauss-server
+
+# Local config overrides
+config.local.toml
+*.local.toml

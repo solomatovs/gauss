@@ -1,0 +1,12 @@
+[package]
+name = "gauss-processor-tcp-sink"
+edition.workspace = true
+version.workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+gauss-api = { workspace = true }
+serde = { workspace = true }
+tokio = { workspace = true, features = ["net", "sync", "rt"] }
