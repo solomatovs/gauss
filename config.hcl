@@ -1,0 +1,30 @@
+topics = [
+  {
+    name           = "input"
+    storage        = "./target/debug/libgauss_storage_memory.so"
+    storage_config = {
+      storage_size = 1000
+    }
+  },
+  {
+    name           = "output"
+    storage        = "./target/debug/libgauss_storage_memory.so"
+    storage_config = {
+      storage_size = 1000
+    }
+  }
+]
+
+processors = [
+  {
+    name   = "copy"
+    plugin = "./target/debug/libgauss_processor_passthrough.so"
+    source = {
+      topic = "input"
+      read  = "offset"
+    }
+    target = {
+      topic = "output"
+    }
+  }
+]

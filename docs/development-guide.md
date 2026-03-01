@@ -65,14 +65,14 @@
 - Плагины изолированы друг от друга и взаимодействуют только через API трейты
 - **Нет builtin-плагинов** — движок не зависит ни от одного плагинного крейта напрямую. Все плагины загружаются как `.so` через FFI (`dlopen`/`dlsym`). В конфиге указываются пути к `.so` файлам, не строковые алиасы:
 
-```toml
+```hcl
 # Правильно — путь к .so:
 storage = "./plugins/libgauss_storage_memory.so"
-plugin = "./plugins/libgauss_processor_passthrough.so"
+plugin  = "./plugins/libgauss_processor_passthrough.so"
 
 # Неправильно — нет builtin алиасов:
 # storage = "memory"
-# plugin = "builtin:passthrough"
+# plugin  = "builtin:passthrough"
 ```
 
 - Плагинные крейты используют `crate-type = ["rlib", "cdylib"]` — `cdylib` для .so загрузки движком, `rlib` для собственных unit/integration тестов

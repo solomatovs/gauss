@@ -154,12 +154,12 @@ impl Engine {
             .map_err(|e| e.with_context(&topic_ctx))?;
             let params = lib.config_params();
 
-            // Parse TOML → format-independent values.
+            // Parse config → format-independent values.
             let old_raw =
-                plugin_host::parse_toml_config(old_topic.storage_config.as_ref(), &params)
+                plugin_host::parse_plugin_config(old_topic.storage_config.as_ref(), &params)
                     .map_err(|e| e.with_context(&topic_ctx))?;
             let new_raw =
-                plugin_host::parse_toml_config(new_topic.storage_config.as_ref(), &params)
+                plugin_host::parse_plugin_config(new_topic.storage_config.as_ref(), &params)
                     .map_err(|e| e.with_context(&topic_ctx))?;
 
             let old_values = plugin_host::validate_and_build(&old_raw, &params)
@@ -239,12 +239,6 @@ impl Engine {
 
         tracing::info!("config reload complete");
         Ok(())
-    }
-
-    /// Reload configuration from a file path.
-    pub async fn reload_from_file(&mut self, path: &str) -> Result<(), EngineError> {
-        let new_config = GaussConfig::load(path)?;
-        self.reload(new_config).await
     }
 
     /// Graceful shutdown: signal all processors and wait for them.

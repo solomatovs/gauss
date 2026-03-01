@@ -1,0 +1,8 @@
+[package]
+name = "gauss-config-hcl"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+gauss-engine = { workspace = true }
+hcl-rs = "0.18"

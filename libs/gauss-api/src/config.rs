@@ -88,7 +88,7 @@ impl ConfigValues {
     pub fn get_u64(&self, name: &str) -> Option<u64> {
         match self.get(name) {
             Some(ParamValue::U64(v)) => Some(*v),
-            // TOML has no unsigned integers — accept non-negative i64.
+            // Most config formats lack unsigned integers — accept non-negative i64.
             Some(ParamValue::I64(v)) if *v >= 0 => Some(*v as u64),
             _ => None,
         }

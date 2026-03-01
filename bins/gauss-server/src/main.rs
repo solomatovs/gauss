@@ -1,11 +1,18 @@
 use clap::Parser;
 
+use gauss_engine::config::ConfigRegistry;
+
 #[derive(Parser)]
 #[command(name = "gauss-server", about = "Gauss streaming data server")]
 struct Cli {
-    /// Path to TOML configuration file.
-    #[arg(long, default_value = "config.toml", env = "GAUSS_CONFIG")]
+    /// Path to configuration file (HCL).
+    #[arg(long, default_value = "config.hcl", env = "GAUSS_CONFIG")]
     config: String,
+}
+
+fn config_registry() -> ConfigRegistry {
+    ConfigRegistry::new()
+        .register(gauss_config_hcl::HclParser)
 }
 
 #[tokio::main]
@@ -18,9 +25,10 @@ async fn main() {
         .init();
 
     let cli = Cli::parse();
+    let registry = config_registry();
 
     tracing::info!(config = %cli.config, "loading configuration");
-    let config = match gauss_engine::config::GaussConfig::load(&cli.config) {
+    let config = match registry.load(&cli.config) {
         Ok(c) => c,
         Err(e) => {
             tracing::error!(error = %e, "failed to load config");
@@ -56,8 +64,13 @@ async fn main() {
         tokio::select! {
             _ = sighup.recv() => {
                 tracing::info!(config = %cli.config, "SIGHUP received, reloading configuration");
-                match engine.reload_from_file(&cli.config).await {
-                    Ok(()) => tracing::info!("configuration reloaded successfully"),
+                match registry.load(&cli.config) {
+                    Ok(new_config) => {
+                        match engine.reload(new_config).await {
+                            Ok(()) => tracing::info!("configuration reloaded successfully"),
+                            Err(e) => tracing::error!(error = %e, "configuration reload failed (keeping old config)"),
+                        }
+                    }
                     Err(e) => tracing::error!(error = %e, "configuration reload failed (keeping old config)"),
                 }
             }

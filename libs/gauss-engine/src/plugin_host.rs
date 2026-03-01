@@ -127,35 +127,37 @@ impl PluginLib {
 }
 
 // ---------------------------------------------------------------------------
-// Config parsing & validation
+// Config parsing & validation (format-independent)
 // ---------------------------------------------------------------------------
 
-/// Parse TOML config into format-independent key-value pairs.
+/// Parse plugin config into format-independent key-value pairs.
 ///
-/// This is the only TOML-aware function in the config pipeline:
+/// `config` is a format-independent `serde_json::Value` (already deserialized
+/// from TOML, YAML, or HCL by the config loader).
+///
 /// - Rejects unknown keys (not declared in `params`).
-/// - Converts `toml::Value` → `ParamValue` based on declared `ParamType`.
+/// - Converts `serde_json::Value` → `ParamValue` based on declared `ParamType`.
 ///
-/// Returns only the keys that are present in the TOML source.
+/// Returns only the keys that are present in the config source.
 /// Defaults and required-checks are handled by `validate_and_build`.
-pub fn parse_toml_config(
-    toml_config: Option<&toml::Value>,
+pub fn parse_plugin_config(
+    config: Option<&serde_json::Value>,
     params: &[ConfigParam],
 ) -> Result<std::collections::HashMap<String, ParamValue>, EngineError> {
-    let tbl = match toml_config {
-        Some(toml::Value::Table(tbl)) => tbl,
+    let obj = match config {
+        Some(serde_json::Value::Object(map)) => map,
         Some(_) => {
             return Err(EngineError::Config(
-                "config must be a TOML table".into(),
+                "plugin config must be a table/object".into(),
             ))
         }
         None => return Ok(std::collections::HashMap::new()),
     };
 
-    // Reject unknown keys — any TOML key not declared via qs_config_params().
+    // Reject unknown keys — any key not declared via qs_config_params().
     let known: std::collections::HashSet<&str> =
         params.iter().map(|p| p.name.as_str()).collect();
-    for key in tbl.keys() {
+    for key in obj.keys() {
         if !known.contains(key.as_str()) {
             return Err(EngineError::Config(format!(
                 "unknown parameter '{key}'"
@@ -165,8 +167,8 @@ pub fn parse_toml_config(
 
     let mut result = std::collections::HashMap::new();
     for param in params {
-        if let Some(v) = tbl.get(&param.name) {
-            let pv = toml_to_param_value(v, param)?;
+        if let Some(v) = obj.get(&param.name) {
+            let pv = value_to_param_value(v, param)?;
             result.insert(param.name.clone(), pv);
         }
     }
@@ -207,26 +209,31 @@ pub fn validate_and_build(
     Ok(values)
 }
 
-/// Convert a single TOML value to a ParamValue according to the declared type.
-fn toml_to_param_value(
-    toml_val: &toml::Value,
+/// Convert a single value to a ParamValue according to the declared type.
+fn value_to_param_value(
+    val: &serde_json::Value,
     param: &ConfigParam,
 ) -> Result<ParamValue, EngineError> {
     match param.param_type {
         ParamType::Bool => {
-            let b = toml_val.as_bool().ok_or_else(|| {
+            let b = val.as_bool().ok_or_else(|| {
                 EngineError::Config(format!("parameter '{}': expected bool", param.name))
             })?;
             Ok(ParamValue::Bool(b))
         }
         ParamType::I64 => {
-            let i = toml_val.as_integer().ok_or_else(|| {
+            let i = val.as_i64().ok_or_else(|| {
                 EngineError::Config(format!("parameter '{}': expected integer", param.name))
             })?;
             Ok(ParamValue::I64(i))
         }
         ParamType::U64 => {
-            let i = toml_val.as_integer().ok_or_else(|| {
+            // Try u64 first (covers positive integers from any source).
+            if let Some(u) = val.as_u64() {
+                return Ok(ParamValue::U64(u));
+            }
+            // Fall back to i64 for formats that only have signed integers.
+            let i = val.as_i64().ok_or_else(|| {
                 EngineError::Config(format!("parameter '{}': expected integer", param.name))
             })?;
             if i < 0 {
@@ -238,83 +245,27 @@ fn toml_to_param_value(
             Ok(ParamValue::U64(i as u64))
         }
         ParamType::F64 => {
-            let f = toml_val.as_float().ok_or_else(|| {
+            let f = val.as_f64().ok_or_else(|| {
                 EngineError::Config(format!("parameter '{}': expected float", param.name))
             })?;
             Ok(ParamValue::F64(f))
         }
-        ParamType::Str => Ok(ParamValue::Str(flatten_toml_value(toml_val))),
+        ParamType::Str => Ok(ParamValue::Str(flatten_value(val))),
     }
 }
 
-/// Flatten a TOML value into a string for the flat config transport.
+/// Flatten a value into a string for flat config transport.
 ///
 /// Scalars are converted directly (no quoting).
-/// Arrays and tables are serialized into a string representation
-/// for lossless transport through the flat `ParamValue::Str` layer.
-fn flatten_toml_value(val: &toml::Value) -> String {
+/// Arrays and objects are serialized as JSON strings.
+fn flatten_value(val: &serde_json::Value) -> String {
     match val {
-        toml::Value::String(s) => s.clone(),
-        toml::Value::Integer(i) => i.to_string(),
-        toml::Value::Float(f) => f.to_string(),
-        toml::Value::Boolean(b) => b.to_string(),
-        toml::Value::Datetime(dt) => dt.to_string(),
-        toml::Value::Array(_) | toml::Value::Table(_) => serialize_value(val),
-    }
-}
-
-/// Serialize a structured value into a string.
-///
-/// Recursively converts arrays and tables into a textual representation
-/// suitable for flat config transport. The output uses JSON-compatible
-/// syntax (standard, unambiguous, parseable by any JSON library).
-fn serialize_value(val: &toml::Value) -> String {
-    match val {
-        toml::Value::String(s) => {
-            let escaped = s
-                .replace('\\', "\\\\")
-                .replace('"', "\\\"")
-                .replace('\n', "\\n")
-                .replace('\r', "\\r")
-                .replace('\t', "\\t");
-            format!("\"{escaped}\"")
-        }
-        toml::Value::Integer(i) => i.to_string(),
-        toml::Value::Float(f) => {
-            if f.is_nan() {
-                "\"NaN\"".to_string()
-            } else if f.is_infinite() {
-                if f.is_sign_positive() {
-                    "\"Infinity\"".to_string()
-                } else {
-                    "\"-Infinity\"".to_string()
-                }
-            } else {
-                let s = f.to_string();
-                if s.contains('.') || s.contains('e') || s.contains('E') {
-                    s
-                } else {
-                    format!("{s}.0")
-                }
-            }
-        }
-        toml::Value::Boolean(b) => b.to_string(),
-        toml::Value::Datetime(dt) => format!("\"{dt}\""),
-        toml::Value::Array(arr) => {
-            let items: Vec<String> = arr.iter().map(serialize_value).collect();
-            format!("[{}]", items.join(","))
-        }
-        toml::Value::Table(tbl) => {
-            let entries: Vec<String> = tbl
-                .iter()
-                .map(|(k, v)| {
-                    let key = k
-                        .replace('\\', "\\\\")
-                        .replace('"', "\\\"");
-                    format!("\"{key}\":{}", serialize_value(v))
-                })
-                .collect();
-            format!("{{{}}}", entries.join(","))
+        serde_json::Value::String(s) => s.clone(),
+        serde_json::Value::Number(n) => n.to_string(),
+        serde_json::Value::Bool(b) => b.to_string(),
+        serde_json::Value::Null => String::new(),
+        serde_json::Value::Array(_) | serde_json::Value::Object(_) => {
+            serde_json::to_string(val).unwrap_or_default()
         }
     }
 }
@@ -330,17 +281,17 @@ use gauss_api::storage::TopicStorage;
 ///
 /// 1. Load .so, verify ABI version.
 /// 2. Call `qs_config_params()` to get declared params.
-/// 3. Parse TOML → raw values, validate, build ConfigValues.
+/// 3. Parse config → raw values, validate, build ConfigValues.
 /// 4. Call `qs_create_storage(&config_values)`.
 pub fn load_storage(
     path: &Path,
-    toml_config: Option<&toml::Value>,
+    config: Option<&serde_json::Value>,
 ) -> Result<Box<dyn TopicStorage>, EngineError> {
     let lib = PluginLib::load(path, b"qs_create_storage", b"qs_destroy_storage")?;
     let params = lib.config_params();
-    let raw = parse_toml_config(toml_config, &params)?;
-    let config = validate_and_build(&raw, &params)?;
-    let ptr = lib.create(&config)?;
+    let raw = parse_plugin_config(config, &params)?;
+    let config_values = validate_and_build(&raw, &params)?;
+    let ptr = lib.create(&config_values)?;
     // Safety: the plugin returned a Box<Box<dyn TopicStorage>>, we reconstruct it.
     let storage = unsafe { *Box::from_raw(ptr as *mut Box<dyn TopicStorage>) };
     // Leak the library to keep the .so loaded.
@@ -351,13 +302,13 @@ pub fn load_storage(
 /// Load a `Processor` plugin from a .so file.
 pub fn load_processor(
     path: &Path,
-    toml_config: Option<&toml::Value>,
+    config: Option<&serde_json::Value>,
 ) -> Result<Box<dyn Processor>, EngineError> {
     let lib = PluginLib::load(path, b"qs_create_processor", b"qs_destroy_processor")?;
     let params = lib.config_params();
-    let raw = parse_toml_config(toml_config, &params)?;
-    let config = validate_and_build(&raw, &params)?;
-    let ptr = lib.create(&config)?;
+    let raw = parse_plugin_config(config, &params)?;
+    let config_values = validate_and_build(&raw, &params)?;
+    let ptr = lib.create(&config_values)?;
     let processor = unsafe { *Box::from_raw(ptr as *mut Box<dyn Processor>) };
     std::mem::forget(lib);
     Ok(processor)
@@ -397,4 +348,3 @@ pub fn check_sighup_changes(
 
     Ok(())
 }
-

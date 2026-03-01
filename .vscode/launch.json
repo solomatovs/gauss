@@ -45,7 +45,7 @@
                     "kind": "bin"
                 }
             },
-            "args": ["--config", "config.toml"],
+            "args": ["--config", "config.hcl"],
             "cwd": "${workspaceFolder}"
         }
     ]
